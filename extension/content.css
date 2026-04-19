@@ -1,0 +1,682 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,wght@0,300;0,700;1,300&family=Syne:wght@700;800&family=Unbounded:wght@900&display=swap');
+
+/* ── THEME VARIABLES ── */
+#lvx-root {
+  --lvx-color-main:    #F2EDD7;
+  --lvx-color-accent:  #E52222;
+  --lvx-font-main:     Impact, "Arial Black", serif;
+  --lvx-font-accent:   Impact, "Arial Black", sans-serif;
+  --lvx-text-case:     uppercase;
+  --lvx-main-tracking: 0;
+  --lvx-glow-main:     0 0 22px rgba(255,51,71,0.28), 0 3px 0 rgba(0,0,0,0.32);
+  --lvx-glow-accent:   0 0 20px rgba(255,51,71,0.22);
+  --lvx-bg-overlay:    linear-gradient(180deg, rgba(0,0,0,0.84), rgba(0,0,0,0.96)),
+                       linear-gradient(115deg, rgba(255,51,71,0.08), transparent 38%, rgba(245,240,219,0.035));
+  --lvx-bg-grid:       1;
+}
+
+/* ── HYPEBEAST: pure white, Bebas Neue, tight tracking ── */
+#lvx-root[data-lvx-theme="hype"] {
+  --lvx-color-main:    #FFFFFF;
+  --lvx-color-accent:  #FFFFFF;
+  --lvx-font-main:     "Bebas Neue", Impact, sans-serif;
+  --lvx-font-accent:   "Bebas Neue", Impact, sans-serif;
+  --lvx-text-case:     uppercase;
+  --lvx-main-tracking: 0.04em;
+  --lvx-glow-main:     none;
+  --lvx-glow-accent:   none;
+  --lvx-bg-overlay:    linear-gradient(180deg, rgba(0,0,0,0.92), rgba(0,0,0,0.97));
+  --lvx-bg-grid:       0;
+}
+
+/* ── SOFT: pastel, lowercase, thin DM Sans ── */
+#lvx-root[data-lvx-theme="soft"] {
+  --lvx-color-main:    #FFB4C2;
+  --lvx-color-accent:  #C9B8FF;
+  --lvx-font-main:     "DM Sans", sans-serif;
+  --lvx-font-accent:   "DM Sans", sans-serif;
+  --lvx-text-case:     none;
+  --lvx-main-tracking: -0.01em;
+  --lvx-glow-main:     0 0 30px rgba(201,184,255,0.25);
+  --lvx-glow-accent:   0 0 24px rgba(255,180,194,0.25);
+  --lvx-bg-overlay:    linear-gradient(160deg, rgba(0,0,0,0.88), rgba(10,0,20,0.95));
+  --lvx-bg-grid:       0;
+}
+
+/* ── NEON: cyan + magenta, glow ── */
+#lvx-root[data-lvx-theme="neon"] {
+  --lvx-color-main:    #00FFEA;
+  --lvx-color-accent:  #FF2D78;
+  --lvx-font-main:     "Syne", "Space Grotesk", sans-serif;
+  --lvx-font-accent:   "Syne", "Space Grotesk", sans-serif;
+  --lvx-text-case:     uppercase;
+  --lvx-main-tracking: 0.06em;
+  --lvx-glow-main:     0 0 18px rgba(0,255,234,0.6), 0 0 40px rgba(0,255,234,0.25);
+  --lvx-glow-accent:   0 0 18px rgba(255,45,120,0.6), 0 0 40px rgba(255,45,120,0.25);
+  --lvx-bg-overlay:    linear-gradient(180deg, rgba(0,0,0,0.9), rgba(0,0,8,0.97));
+  --lvx-bg-grid:       0;
+}
+
+/* ── CLEAN: white only, no bg, minimal ── */
+#lvx-root[data-lvx-theme="clean"] {
+  --lvx-color-main:    #FFFFFF;
+  --lvx-color-accent:  rgba(255,255,255,0.55);
+  --lvx-font-main:     "Unbounded", Impact, sans-serif;
+  --lvx-font-accent:   "Unbounded", Impact, sans-serif;
+  --lvx-text-case:     uppercase;
+  --lvx-main-tracking: -0.02em;
+  --lvx-glow-main:     none;
+  --lvx-glow-accent:   none;
+  --lvx-bg-overlay:    linear-gradient(180deg, rgba(0,0,0,0.78), rgba(0,0,0,0.92));
+  --lvx-bg-grid:       0;
+}
+
+#lvx-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+  font-family: "Space Grotesk", "Inter", Arial, sans-serif;
+}
+
+.lvx-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--lvx-bg-overlay);
+  backdrop-filter: blur(3px) saturate(0.78);
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+#lvx-root.lvx-active .lvx-stage {
+  opacity: 1;
+}
+
+.lvx-stage::before,
+.lvx-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.lvx-stage::before {
+  opacity: calc(0.12 * var(--lvx-bg-grid));
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.075) 0 1px, transparent 1px 8px),
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 34px);
+  mix-blend-mode: screen;
+}
+
+.lvx-stage::after {
+  opacity: 0;
+  background:
+    linear-gradient(90deg, transparent 0%, rgba(255, 51, 71, 0.18) 45%, rgba(255, 255, 255, 0.08) 50%, transparent 100%);
+  transform: translateX(-18%);
+  transition: opacity 120ms ease, transform 180ms ease;
+}
+
+.lvx-stage.lvx-hit::after {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.lvx-hud {
+  position: absolute;
+  left: 24px;
+  top: 22px;
+  max-width: min(640px, calc(100vw - 48px));
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.72);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  pointer-events: auto;
+  backdrop-filter: blur(14px);
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.lvx-hud.lvx-dim {
+  opacity: 0.25;
+  transform: translateY(-2px);
+}
+
+.lvx-hud:hover {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.lvx-hud-label {
+  color: #21e6c1;
+  white-space: nowrap;
+}
+
+.lvx-hud-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lvx-hud.lvx-error .lvx-hud-label {
+  color: #ff3347;
+}
+
+.lvx-stop {
+  border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 7px;
+  background: rgba(255,255,255,0.09);
+  color: #fff;
+  padding: 5px 8px;
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.lvx-theme-btn {
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 7px;
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.7);
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.lvx-theme-btn:hover {
+  background: rgba(255,255,255,0.14);
+  color: #fff;
+}
+/* small colored dot per active theme */
+#lvx-root[data-lvx-theme="hype"]  .lvx-theme-btn { color: #fff;     border-color: rgba(255,255,255,0.4); }
+#lvx-root[data-lvx-theme="soft"]  .lvx-theme-btn { color: #FFB4C2;  border-color: rgba(255,180,194,0.5); }
+#lvx-root[data-lvx-theme="neon"]  .lvx-theme-btn { color: #00FFEA;  border-color: rgba(0,255,234,0.5); }
+#lvx-root[data-lvx-theme="clean"] .lvx-theme-btn { color: #ccc;     border-color: rgba(255,255,255,0.3); }
+
+.lvx-moment {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 160ms ease, filter 160ms ease;
+}
+
+.lvx-moment.lvx-out {
+  opacity: 0;
+  filter: blur(2px);
+}
+
+.lvx-text {
+  position: absolute;
+  z-index: 2;
+  max-width: 82vw;
+  max-height: 48vh;
+  color: var(--lvx-color-main);
+  text-transform: var(--lvx-text-case);
+  letter-spacing: var(--lvx-main-tracking);
+  line-height: 0.92;
+  text-shadow: var(--lvx-glow-main);
+}
+
+.lvx-main,
+.lvx-punch {
+  left: 50%;
+  top: 50%;
+  width: 82vw;
+  transform: translate(-50%, -50%);
+  font-family: var(--lvx-font-main);
+  font-weight: 900;
+  text-align: center;
+}
+
+.lvx-punch {
+  width: 88vw;
+  max-height: 55vh;
+}
+
+.lvx-support {
+  left: 12vw;
+  top: 22vh;
+  width: 54vw;
+  max-height: 28vh;
+  color: var(--lvx-color-accent);
+  font-family: var(--lvx-font-accent);
+  font-weight: 900;
+  text-align: left;
+  line-height: 1.04;
+  text-shadow: var(--lvx-glow-accent);
+}
+
+.lvx-tag {
+  right: 14vw;
+  bottom: 23vh;
+  width: 48vw;
+  max-height: 24vh;
+  color: var(--lvx-color-accent);
+  font-family: var(--lvx-font-accent);
+  font-weight: 900;
+  text-align: right;
+  line-height: 1;
+  text-shadow: var(--lvx-glow-accent);
+}
+
+/* soft theme: lighter weight for main text */
+#lvx-root[data-lvx-theme="soft"] .lvx-main,
+#lvx-root[data-lvx-theme="soft"] .lvx-punch {
+  font-weight: 700;
+  line-height: 1.05;
+}
+#lvx-root[data-lvx-theme="soft"] .lvx-support,
+#lvx-root[data-lvx-theme="soft"] .lvx-tag {
+  font-weight: 300;
+  font-style: italic;
+}
+/* neon: slightly looser line height */
+#lvx-root[data-lvx-theme="neon"] .lvx-main,
+#lvx-root[data-lvx-theme="neon"] .lvx-punch {
+  line-height: 0.95;
+}
+/* clean/hype: tighter */
+#lvx-root[data-lvx-theme="hype"] .lvx-main,
+#lvx-root[data-lvx-theme="hype"] .lvx-punch {
+  line-height: 0.88;
+  letter-spacing: 0.05em;
+}
+
+/* ── EXISTING LAYOUTS ── */
+.lvx-layout-left .lvx-main,
+.lvx-layout-ref-c .lvx-main {
+  left: 13vw;
+  top: 53%;
+  width: 78vw;
+  transform: translateY(-50%);
+  text-align: left;
+}
+
+.lvx-layout-low .lvx-main {
+  top: 59%;
+  width: 76vw;
+}
+
+.lvx-layout-wide .lvx-punch {
+  width: 90vw;
+  top: 51%;
+}
+
+.lvx-layout-ref-a .lvx-support {
+  left: 12vw;
+  top: 22vh;
+  width: 62vw;
+}
+
+.lvx-layout-ref-a .lvx-main,
+.lvx-layout-ref-a .lvx-punch {
+  left: 16vw;
+  top: 47vh;
+  width: 76vw;
+  transform: translateY(-50%);
+  text-align: left;
+}
+
+.lvx-layout-ref-a .lvx-tag {
+  right: 15vw;
+  bottom: 27vh;
+}
+
+.lvx-layout-ref-b .lvx-support {
+  left: 17vw;
+  top: 24vh;
+  width: 56vw;
+}
+
+.lvx-layout-ref-b .lvx-main,
+.lvx-layout-ref-b .lvx-punch {
+  left: 50%;
+  top: 50%;
+  width: 84vw;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.lvx-layout-ref-b .lvx-tag {
+  right: 17vw;
+  bottom: 24vh;
+}
+
+.lvx-layout-ref-c .lvx-support {
+  left: 16vw;
+  top: 21vh;
+  width: 50vw;
+}
+
+.lvx-layout-ref-c .lvx-tag,
+.lvx-layout-tag .lvx-tag {
+  right: 14vw;
+  bottom: 27vh;
+}
+
+/* ── NEW LAYOUTS ── */
+
+/* DIAG-A: support top-right, main bottom-left */
+.lvx-layout-diag-a .lvx-support {
+  right: 9vw;
+  top: 14vh;
+  left: auto;
+  width: 52vw;
+  text-align: right;
+}
+.lvx-layout-diag-a .lvx-main,
+.lvx-layout-diag-a .lvx-punch {
+  left: 7vw;
+  bottom: 14vh;
+  top: auto;
+  transform: none;
+  text-align: left;
+  width: 80vw;
+}
+.lvx-layout-diag-a .lvx-tag {
+  left: 7vw;
+  right: auto;
+  bottom: 6vh;
+  text-align: left;
+  width: 50vw;
+}
+
+/* DIAG-B: support bottom-left small, main top-right */
+.lvx-layout-diag-b .lvx-support {
+  left: 8vw;
+  bottom: 18vh;
+  top: auto;
+  width: 44vw;
+  text-align: left;
+}
+.lvx-layout-diag-b .lvx-main,
+.lvx-layout-diag-b .lvx-punch {
+  right: 6vw;
+  top: 16vh;
+  left: auto;
+  transform: none;
+  text-align: right;
+  width: 78vw;
+}
+.lvx-layout-diag-b .lvx-tag {
+  right: 6vw;
+  bottom: 10vh;
+  width: 40vw;
+}
+
+/* SPLIT-V: support top-center, main lower-center */
+.lvx-layout-split-v .lvx-support {
+  left: 50%;
+  top: 10vh;
+  transform: translateX(-50%);
+  text-align: center;
+  width: 72vw;
+}
+.lvx-layout-split-v .lvx-main,
+.lvx-layout-split-v .lvx-punch {
+  left: 50%;
+  bottom: 12vh;
+  top: auto;
+  transform: translateX(-50%);
+  text-align: center;
+  width: 86vw;
+}
+.lvx-layout-split-v .lvx-tag {
+  left: 50%;
+  right: auto;
+  bottom: 4vh;
+  transform: translateX(-50%);
+  text-align: center;
+  width: 60vw;
+}
+
+/* ASYMM-L: support far-left vertical, main right-biased */
+.lvx-layout-asymm-l .lvx-support {
+  left: 6vw;
+  top: 30%;
+  transform: translateY(-50%);
+  width: 30vw;
+  text-align: left;
+}
+.lvx-layout-asymm-l .lvx-main,
+.lvx-layout-asymm-l .lvx-punch {
+  right: 5vw;
+  top: 54%;
+  left: auto;
+  transform: translateY(-50%);
+  text-align: right;
+  width: 68vw;
+}
+
+/* ASYMM-R: support far-right, main left-biased */
+.lvx-layout-asymm-r .lvx-support {
+  right: 6vw;
+  top: 28%;
+  left: auto;
+  transform: translateY(-50%);
+  width: 32vw;
+  text-align: right;
+}
+.lvx-layout-asymm-r .lvx-main,
+.lvx-layout-asymm-r .lvx-punch {
+  left: 5vw;
+  top: 56%;
+  transform: translateY(-50%);
+  text-align: left;
+  width: 72vw;
+}
+
+/* CORNER-TL: main anchored top-left, tag bottom-right */
+.lvx-layout-corner-tl .lvx-main,
+.lvx-layout-corner-tl .lvx-punch {
+  left: 7vw;
+  top: 12vh;
+  transform: none;
+  text-align: left;
+  width: 82vw;
+}
+.lvx-layout-corner-tl .lvx-support {
+  left: 7vw;
+  bottom: 22vh;
+  top: auto;
+  width: 52vw;
+}
+.lvx-layout-corner-tl .lvx-tag {
+  right: 7vw;
+  bottom: 8vh;
+}
+
+/* CORNER-BR: main anchored bottom-right */
+.lvx-layout-corner-br .lvx-main,
+.lvx-layout-corner-br .lvx-punch {
+  right: 6vw;
+  bottom: 12vh;
+  left: auto;
+  top: auto;
+  transform: none;
+  text-align: right;
+  width: 84vw;
+}
+.lvx-layout-corner-br .lvx-support {
+  left: 7vw;
+  top: 14vh;
+  width: 50vw;
+}
+.lvx-layout-corner-br .lvx-tag {
+  left: 7vw;
+  right: auto;
+  bottom: 8vh;
+  text-align: left;
+  width: 40vw;
+}
+
+/* EDGE-R: everything right-aligned */
+.lvx-layout-edge-r .lvx-main,
+.lvx-layout-edge-r .lvx-punch {
+  right: 6vw;
+  left: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  text-align: right;
+  width: 78vw;
+}
+.lvx-layout-edge-r .lvx-support {
+  right: 6vw;
+  left: auto;
+  top: 18vh;
+  width: 48vw;
+  text-align: right;
+}
+.lvx-layout-edge-r .lvx-tag {
+  right: 6vw;
+  bottom: 12vh;
+}
+
+/* HIGH: main positioned in upper third */
+.lvx-layout-high .lvx-main,
+.lvx-layout-high .lvx-punch {
+  left: 50%;
+  top: 28vh;
+  transform: translateX(-50%);
+  text-align: center;
+  width: 84vw;
+}
+.lvx-layout-high .lvx-tag {
+  left: 50%;
+  right: auto;
+  bottom: 14vh;
+  transform: translateX(-50%);
+  text-align: center;
+  width: 56vw;
+}
+
+/* HERO: maximum-size centered punch — for big moments */
+.lvx-layout-hero .lvx-punch {
+  width: 96vw;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  max-height: 70vh;
+}
+
+.lvx-word-row {
+  display: block;
+  white-space: nowrap;
+}
+
+.lvx-word {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(18px) scale(0.9);
+  transition:
+    opacity 130ms ease,
+    transform 230ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 230ms ease;
+  white-space: nowrap;
+  will-change: opacity, transform;
+}
+
+.lvx-word:not(:last-child) {
+  margin-right: 0.16em;
+}
+
+.lvx-word.lvx-in {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.lvx-main .lvx-word.lvx-in,
+.lvx-punch .lvx-word.lvx-in {
+  animation: lvx-slam 310ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.lvx-support .lvx-word,
+.lvx-tag .lvx-word {
+  transform: translateX(-18px) scale(0.94);
+}
+
+.lvx-support .lvx-word.lvx-in,
+.lvx-tag .lvx-word.lvx-in {
+  transform: translateX(0) scale(1);
+}
+
+@keyframes lvx-slam {
+  0% {
+    opacity: 0;
+    transform: translateY(24px) scale(0.82);
+    filter: blur(2px);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.02);
+    filter: none;
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .lvx-hud {
+    left: 12px;
+    top: 12px;
+    max-width: calc(100vw - 24px);
+    font-size: 11px;
+  }
+
+  .lvx-main,
+  .lvx-punch {
+    width: 90vw;
+  }
+
+  .lvx-layout-left .lvx-main {
+    left: 6vw;
+    width: 88vw;
+  }
+
+  .lvx-layout-ref-a .lvx-main,
+  .lvx-layout-ref-a .lvx-punch,
+  .lvx-layout-ref-c .lvx-main {
+    left: 7vw;
+    width: 88vw;
+  }
+
+  .lvx-support {
+    left: 7vw;
+    top: 20vh;
+    width: 82vw;
+  }
+
+  .lvx-tag {
+    right: 7vw;
+    width: 78vw;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lvx-word,
+  .lvx-moment,
+  .lvx-stage,
+  .lvx-stage::after,
+  .lvx-hud {
+    transition-duration: 1ms;
+    animation-duration: 1ms;
+  }
+}

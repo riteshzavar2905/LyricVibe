@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "LyricVibe Local",
+  "version": "0.1.0",
+  "description": "Local LyricVibe prototype that detects the active music tab and overlays synced kinetic lyrics.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabCapture",
+    "offscreen",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8787/*",
+    "http://localhost:8787/*"
+  ],
+  "action": {
+    "default_title": "Start LyricVibe"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  }
+}
