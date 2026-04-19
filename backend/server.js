@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 loadEnv();
 
 const PORT = Number(process.env.PORT || 8787);
-const HOST = process.env.HOST || '127.0.0.1';
+const HOST = '0.0.0.0';
 const LRCLIB_BASE = 'https://lrclib.net/api';
 
 const server = http.createServer(async (req, res) => {
