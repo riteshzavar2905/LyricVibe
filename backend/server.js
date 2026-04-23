@@ -22,7 +22,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       sendJson(res, 200, {
         ok: true,
-        acrConfigured: hasAcrConfig()
+        acrConfigured: hasAcrConfig(),
+        timestamp: Date.now()
       });
       return;
     }
@@ -47,7 +48,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`LyricVibe local backend running at http://${HOST}:${PORT}`);
+  console.log(`LyricVibe backend running at http://${HOST}:${PORT}`);
   console.log(hasAcrConfig()
     ? 'ACRCloud is configured for audio fingerprinting.'
     : 'ACRCloud is not configured. Metadata mode still works on supported music pages.');
@@ -170,6 +171,7 @@ async function recognizeWithAcr(audioBase64, mimeType) {
 }
 
 function trackFromHints(hints) {
+  // Direct track + artist metadata (from Spotify, YouTube Music, SoundCloud)
   if (hints.track && hints.artist) {
     return {
       title: hints.track,
@@ -180,6 +182,19 @@ function trackFromHints(hints) {
     };
   }
 
+  // Track name only (no artist) — still try it
+  if (hints.track) {
+    return {
+      title: hints.track,
+      artist: '',
+      query: hints.track,
+      durationMs: secondsToMs(hints.duration),
+      playOffsetMs: secondsToMs(hints.currentTime),
+      source: 'page-metadata-partial'
+    };
+  }
+
+  // Parse from page title
   const parsed = parsePageTitle(hints.pageTitle || '');
   if (parsed.title || parsed.query) {
     return {
@@ -228,7 +243,10 @@ function buildLyricQueries(track, hints) {
   const rawQuery = track.query || '';
   const pageTitle = cleanPageTitle(hints.pageTitle || '');
 
-  [titleArtist, titleOnly, rawQuery, pageTitle].forEach((query) => {
+  // Also try "artist title" reversed order
+  const artistTitle = [track.title, track.artist].filter(Boolean).join(' ').trim();
+
+  [titleArtist, artistTitle, titleOnly, rawQuery, pageTitle].forEach((query) => {
     const cleaned = cleanupSearchQuery(query);
     if (cleaned && !queries.includes(cleaned)) queries.push(cleaned);
   });
@@ -241,7 +259,7 @@ async function searchLrclib(query) {
   const url = `${LRCLIB_BASE}/search?q=${encodeURIComponent(query)}`;
   const response = await fetch(url, {
     headers: {
-      'User-Agent': 'LyricVibeLocal/0.1 (local prototype)'
+      'User-Agent': 'LyricVibeLocal/0.2 (chrome extension prototype)'
     }
   });
   if (!response.ok) return [];
@@ -254,7 +272,7 @@ async function hydrateLrclibResult(result) {
 
   const response = await fetch(`${LRCLIB_BASE}/get/${result.id}`, {
     headers: {
-      'User-Agent': 'LyricVibeLocal/0.1 (local prototype)'
+      'User-Agent': 'LyricVibeLocal/0.2 (chrome extension prototype)'
     }
   });
 
@@ -281,11 +299,23 @@ function scoreLyricResult(item, targetTitle, targetArtist, targetDurationMs) {
   const artist = normalizeText(item.artistName || '');
   let score = 0;
 
+  // Strongly prefer synced lyrics
   if (item.syncedLyrics) score += 40;
   if (item.plainLyrics) score += 10;
-  if (targetTitle && title && (title.includes(targetTitle) || targetTitle.includes(title))) score += 24;
-  if (targetArtist && artist && (artist.includes(targetArtist) || targetArtist.includes(artist))) score += 20;
 
+  // Title matching
+  if (targetTitle && title) {
+    if (title === targetTitle) score += 30;
+    else if (title.includes(targetTitle) || targetTitle.includes(title)) score += 24;
+  }
+
+  // Artist matching
+  if (targetArtist && artist) {
+    if (artist === targetArtist) score += 25;
+    else if (artist.includes(targetArtist) || targetArtist.includes(artist)) score += 20;
+  }
+
+  // Duration matching
   const durationMs = secondsToMs(item.duration);
   if (targetDurationMs && durationMs) {
     const diff = Math.abs(targetDurationMs - durationMs);
@@ -299,6 +329,16 @@ function scoreLyricResult(item, targetTitle, targetArtist, targetDurationMs) {
 function parsePageTitle(title) {
   const cleaned = cleanPageTitle(title);
   if (!cleaned) return {};
+
+  // Handle Spotify title format: "Song Name · Artist Name | Spotify" (already cleaned)
+  const spotifySplit = cleaned.split(' · ');
+  if (spotifySplit.length >= 2) {
+    return {
+      title: spotifySplit[0].trim(),
+      artist: spotifySplit.slice(1).join(' ').trim(),
+      query: `${spotifySplit.slice(1).join(' ').trim()} ${spotifySplit[0].trim()}`
+    };
+  }
 
   const separators = [' - ', ' | ', ' by '];
   for (const separator of separators) {
@@ -322,6 +362,8 @@ function cleanPageTitle(title) {
     .replace(/\s*-\s*YouTube Music\s*$/i, '')
     .replace(/\s*-\s*YouTube\s*$/i, '')
     .replace(/\s*\|\s*Spotify\s*$/i, '')
+    .replace(/\s*·\s*Spotify\s*$/i, '')
+    .replace(/\s*-\s*Spotify\s*$/i, '')
     .replace(/\s*\|\s*SoundCloud\s*$/i, '')
     .replace(/\[[^\]]*(official|lyrics?|visualizer|audio|video|mv)[^\]]*\]/gi, '')
     .replace(/\([^)]*(official|lyrics?|visualizer|audio|video|mv)[^)]*\)/gi, '')
@@ -331,7 +373,7 @@ function cleanPageTitle(title) {
 
 function cleanupSearchQuery(query) {
   return cleanPageTitle(query)
-    .replace(/\b(official|lyrics?|visualizer|audio|video|mv|hd|4k)\b/gi, '')
+    .replace(/\b(official|lyrics?|visualizer|audio|video|mv|hd|4k|feat\.?|ft\.?)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
