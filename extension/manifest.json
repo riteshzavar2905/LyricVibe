@@ -1,19 +1,24 @@
 {
   "manifest_version": 3,
-  "name": "LyricVibe Local",
-  "version": "0.1.0",
-  "description": "Local LyricVibe prototype that detects the active music tab and overlays synced kinetic lyrics.",
+  "name": "LyricVibe",
+  "version": "0.2.0",
+  "description": "Overlay synced kinetic lyrics on any music tab — YouTube, Spotify, SoundCloud, and more.",
   "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
     "scripting",
     "tabCapture",
     "offscreen",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
-    "http://127.0.0.1:8787/*",
-    "http://localhost:8787/*"
+    "https://lyricvibe.onrender.com/*",
+    "https://open.spotify.com/*",
+    "https://music.youtube.com/*",
+    "https://www.youtube.com/*",
+    "https://soundcloud.com/*",
+    "<all_urls>"
   ],
   "action": {
     "default_title": "Start LyricVibe"
