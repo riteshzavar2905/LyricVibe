@@ -1,8 +1,17 @@
 (function initLyricVibeOverlay() {
-  const DEFAULT_SYNC_OFFSET_MS = -180;
+  /* ══════════════════════════════════════
+     CONSTANTS & CONFIG
+     ══════════════════════════════════════ */
+  const DEFAULT_SYNC_OFFSET_MS = -200;
   const SYNC_NUDGE_MS = 80;
-  const THEMES = ['samay', 'hype', 'soft', 'neon', 'clean'];
-  const THEME_LABELS = { samay: 'SAMAY', hype: 'HYPE', soft: 'SOFT', neon: 'NEON', clean: 'CLEAN' };
+  const THEMES = ['samay', 'hype', 'soft', 'neon', 'clean', 'retro', 'glass', 'fire', 'elegant', 'aurora', 'matrix', 'vinyl', 'cosmic'];
+  const THEME_LABELS = {
+    samay: 'SAMAY', hype: 'HYPE', soft: 'SOFT', neon: 'NEON',
+    clean: 'CLEAN', retro: 'RETRO', glass: 'GLASS', fire: 'FIRE', elegant: 'ELEGANT',
+    aurora: 'AURORA', matrix: 'MATRIX', vinyl: 'VINYL', cosmic: 'COSMIC'
+  };
+  const ANIMATIONS = ['slam', 'fade-up', 'scale-pop', 'slide-left', 'slide-right', 'blur-in', 'glitch', 'typewriter', 'shatter', 'wave'];
+
   const SETUP_OPENERS = new Set([
     'after', 'although', 'and', 'as', 'before', 'because', 'but', 'even',
     'if', 'i', 'just', 'maybe', 'my', 'now', 'once', 'she', 'since', 'so',
@@ -11,11 +20,15 @@
   ]);
   const TAG_OPENERS = new Set(['is', 'are', 'was', 'were', 'not', 'no', 'never', 'only', 'all']);
 
+  /* If overlay already exists, just show it */
   if (window.__lyricVibeOverlay && window.__lyricVibeOverlay.show) {
     window.__lyricVibeOverlay.show();
     return;
   }
 
+  /* ══════════════════════════════════════
+     STATE
+     ══════════════════════════════════════ */
   const state = {
     active: false,
     lines: [],
@@ -29,9 +42,22 @@
     syncOffsetMs: DEFAULT_SYNC_OFFSET_MS,
     fallbackStartMs: 0,
     fallbackMediaStartMs: 0,
-    theme: 'samay'
+    theme: 'samay',
+    // Sync tracking for auto-adjustment
+    lastMediaTime: 0,
+    lastWallTime: 0,
+    mediaDriftSamples: [],
+    playbackRate: 1,
+    // Spotify-specific: polling for time from DOM
+    spotifyPollInterval: 0,
+    spotifyCurrentTimeMs: 0,
+    spotifyLastPollWall: 0,
+    isSpotify: false
   };
 
+  /* ══════════════════════════════════════
+     DOM CONSTRUCTION
+     ══════════════════════════════════════ */
   const root = document.createElement('div');
   root.id = 'lvx-root';
 
@@ -51,7 +77,8 @@
 
   const stopButton = document.createElement('button');
   stopButton.className = 'lvx-stop';
-  stopButton.textContent = 'Stop';
+  stopButton.textContent = '✕';
+  stopButton.title = 'Stop LyricVibe (Esc)';
   stopButton.addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {});
     teardown();
@@ -60,10 +87,22 @@
   const themeButton = document.createElement('button');
   themeButton.className = 'lvx-theme-btn';
   themeButton.textContent = 'SAMAY';
-  themeButton.title = 'Cycle theme (or press T)';
+  themeButton.title = 'Cycle theme (T)';
   themeButton.addEventListener('click', () => cycleTheme());
 
-  hud.append(hudLabel, hudText, themeButton, stopButton);
+  const syncEarlier = document.createElement('button');
+  syncEarlier.className = 'lvx-sync-btn';
+  syncEarlier.textContent = '[ ←';
+  syncEarlier.title = 'Lyrics earlier ([)';
+  syncEarlier.addEventListener('click', () => nudgeSync(-SYNC_NUDGE_MS));
+
+  const syncLater = document.createElement('button');
+  syncLater.className = 'lvx-sync-btn';
+  syncLater.textContent = '→ ]';
+  syncLater.title = 'Lyrics later (])';
+  syncLater.addEventListener('click', () => nudgeSync(SYNC_NUDGE_MS));
+
+  hud.append(hudLabel, hudText, syncEarlier, syncLater, themeButton, stopButton);
   root.append(stage, hud);
   document.documentElement.appendChild(root);
 
@@ -75,7 +114,7 @@
 
   setHud('Ready. Play music, then click LyricVibe.', false, true);
 
-  // Load saved theme
+  /* Load saved theme */
   try {
     chrome.storage.local.get('lvxTheme', (result) => {
       if (result && result.lvxTheme && THEMES.includes(result.lvxTheme)) {
@@ -84,6 +123,17 @@
     });
   } catch (_) {}
 
+  /* Detect if we're on Spotify */
+  state.isSpotify = location.hostname.includes('spotify.com');
+
+  /* Spotify track-change observer: auto-refresh when song changes */
+  if (state.isSpotify) {
+    setupSpotifyTrackObserver();
+  }
+
+  /* ══════════════════════════════════════
+     MESSAGE LISTENER
+     ══════════════════════════════════════ */
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || !message.type) return;
 
@@ -114,6 +164,9 @@
     if (state.currentMoment) fitMoment(state.currentMoment);
   });
 
+  /* ══════════════════════════════════════
+     PAGE HINTS (works for YT, Spotify, SC, etc.)
+     ══════════════════════════════════════ */
   function getPageHints() {
     const media = getMedia();
     const url = location.href;
@@ -138,10 +191,37 @@
         textFrom('h1.title') ||
         title.replace(/ - YouTube$/i, '');
     } else if (host.includes('spotify.com')) {
-      hints.track = textFrom('[data-testid="context-item-info-title"]') ||
-        textFrom('[data-testid="now-playing-widget"] a');
-      hints.artist = textFrom('[data-testid="context-item-info-artist"]') ||
-        textFrom('[data-testid="now-playing-widget"] span a');
+      /* ── SPOTIFY ENHANCED SELECTORS (2026) ── */
+      // Try multiple selectors — Spotify's DOM changes frequently
+      hints.track =
+        textFrom('[data-testid="context-item-info-title"]') ||
+        textFrom('[data-testid="now-playing-widget"] [data-testid="context-item-info-title"]') ||
+        textFrom('[data-testid="context-item-link"] [dir="auto"]') ||
+        textFrom('[data-testid="now-playing-widget"] a[data-testid="context-item-link"]') ||
+        textFrom('.now-playing .track-info__name a') ||
+        textFrom('.player-controls__left .track-info__name') ||
+        textFrom('[data-testid="CoverSlotExpanded__container"] a') ||
+        spotifyTrackFromNowPlaying() ||
+        spotifyTrackFromFooter() ||
+        '';
+      hints.artist =
+        textFrom('[data-testid="context-item-info-subtitles"]') ||
+        textFrom('[data-testid="context-item-info-artist"]') ||
+        textFrom('[data-testid="now-playing-widget"] span a[href*="/artist/"]') ||
+        textFrom('.now-playing .track-info__artists a') ||
+        textFrom('.player-controls__left .track-info__artists a') ||
+        spotifyArtistFromNowPlaying() ||
+        spotifyArtistFromFooter() ||
+        '';
+      // Spotify time from DOM (no <audio>/<video> element exposed)
+      const spotifyTime = getSpotifyCurrentTimeFromDom();
+      if (spotifyTime !== null) {
+        hints.currentTime = spotifyTime / 1000;
+      }
+      const spotifyDuration = getSpotifyDurationFromDom();
+      if (spotifyDuration !== null) {
+        hints.duration = spotifyDuration / 1000;
+      }
     } else if (host.includes('soundcloud.com')) {
       hints.track = textFrom('.playbackSoundBadge__titleLink') ||
         textFrom('.soundTitle__title');
@@ -150,6 +230,107 @@
     }
 
     return hints;
+  }
+
+  /* ── Spotify-specific DOM scraping helpers ── */
+  function spotifyTrackFromNowPlaying() {
+    // Fallback: grab the first <a> inside the now-playing widget
+    const widget = document.querySelector('[data-testid="now-playing-widget"]');
+    if (!widget) return '';
+    const links = widget.querySelectorAll('a');
+    for (const link of links) {
+      const text = link.textContent.trim();
+      if (text && text.length > 1 && !link.href.includes('/artist/')) return text;
+    }
+    return '';
+  }
+
+  function spotifyTrackFromFooter() {
+    // Fallback: try the footer/bottom bar area
+    const footer = document.querySelector('footer') || document.querySelector('[data-testid="now-playing-bar"]');
+    if (!footer) return '';
+    const links = footer.querySelectorAll('a');
+    for (const link of links) {
+      const text = link.textContent.trim();
+      if (text && text.length > 1 && !link.href.includes('/artist/') && link.href.includes('/track/')) return text;
+    }
+    // Try any link with album/track path
+    for (const link of links) {
+      const text = link.textContent.trim();
+      if (text && text.length > 1 && !link.href.includes('/artist/')) return text;
+    }
+    return '';
+  }
+
+  function spotifyArtistFromNowPlaying() {
+    const widget = document.querySelector('[data-testid="now-playing-widget"]');
+    if (!widget) return '';
+    const links = widget.querySelectorAll('a');
+    for (const link of links) {
+      if (link.href && link.href.includes('/artist/')) return link.textContent.trim();
+    }
+    return '';
+  }
+
+  function spotifyArtistFromFooter() {
+    const footer = document.querySelector('footer') || document.querySelector('[data-testid="now-playing-bar"]');
+    if (!footer) return '';
+    const links = footer.querySelectorAll('a');
+    for (const link of links) {
+      if (link.href && link.href.includes('/artist/')) return link.textContent.trim();
+    }
+    return '';
+  }
+
+  function getSpotifyCurrentTimeFromDom() {
+    // Spotify shows current time as text like "1:23"
+    const el = document.querySelector('[data-testid="playback-position"]') ||
+               document.querySelector('.playback-bar__progress-time-elapsed') ||
+               document.querySelector('.playback-bar [data-testid="playback-position"]') ||
+               document.querySelector('[data-testid="progress-bar"] [data-testid="playback-position"]');
+    if (el) {
+      const ms = parseTimeString(el.textContent);
+      if (ms !== null) return ms;
+    }
+    // Alternative: look for aria-valuenow on the progress bar
+    const bar = document.querySelector('[data-testid="playback-progressbar"] input[type="range"]') ||
+                document.querySelector('.playback-bar input[type="range"]') ||
+                document.querySelector('[data-testid="progress-bar"] input[type="range"]');
+    if (bar) {
+      const val = parseFloat(bar.value);
+      const max = parseFloat(bar.max);
+      if (Number.isFinite(val) && Number.isFinite(max) && max > 0) {
+        return val; // Sometimes value is already in ms or seconds
+      }
+    }
+    // Last resort: check for any time-display element in the footer
+    const footerTimes = document.querySelectorAll('footer [class*="playback"] span, [data-testid="now-playing-bar"] span');
+    for (const span of footerTimes) {
+      const ms = parseTimeString(span.textContent);
+      if (ms !== null) return ms;
+    }
+    return null;
+  }
+
+  function getSpotifyDurationFromDom() {
+    const el = document.querySelector('[data-testid="playback-duration"]') ||
+               document.querySelector('.playback-bar__progress-time-total') ||
+               document.querySelector('.playback-bar [data-testid="playback-duration"]');
+    if (el) {
+      return parseTimeString(el.textContent);
+    }
+    return null;
+  }
+
+  function parseTimeString(str) {
+    if (!str) return null;
+    const clean = str.trim();
+    // Formats: "1:23", "01:23", "1:02:03"
+    const parts = clean.split(':').map(Number);
+    if (parts.some(isNaN)) return null;
+    if (parts.length === 2) return (parts[0] * 60 + parts[1]) * 1000;
+    if (parts.length === 3) return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+    return null;
   }
 
   function textFrom(selector) {
@@ -164,6 +345,80 @@
       null;
   }
 
+  /* ══════════════════════════════════════
+     SPOTIFY TIME POLLING
+     (Spotify doesn't expose <audio>, so we poll the DOM progress bar)
+     ══════════════════════════════════════ */
+  function startSpotifyPolling() {
+    stopSpotifyPolling();
+    if (!state.isSpotify) return;
+
+    state.spotifyPollInterval = setInterval(() => {
+      const ms = getSpotifyCurrentTimeFromDom();
+      if (ms !== null) {
+        state.spotifyCurrentTimeMs = ms;
+        state.spotifyLastPollWall = performance.now();
+      }
+    }, 150); // Poll ~7x per second for tighter sync interpolation
+  }
+
+  function stopSpotifyPolling() {
+    if (state.spotifyPollInterval) {
+      clearInterval(state.spotifyPollInterval);
+      state.spotifyPollInterval = 0;
+    }
+  }
+
+  /* ══════════════════════════════════════
+     SPOTIFY TRACK CHANGE OBSERVER
+     Watches for track title changes and auto-refreshes lyrics
+     ══════════════════════════════════════ */
+  function setupSpotifyTrackObserver() {
+    let lastTrackText = '';
+    const checkTrackChange = () => {
+      const hints = getPageHints();
+      const currentTrack = hints.track || '';
+      if (currentTrack && currentTrack !== lastTrackText && state.active) {
+        lastTrackText = currentTrack;
+        // Notify service worker to re-detect lyrics for the new track
+        try {
+          chrome.runtime.sendMessage({
+            type: 'LV_CONTENT_STOP'
+          }).catch(() => {});
+          // Small delay then request fresh detection
+          setTimeout(() => {
+            chrome.runtime.sendMessage({
+              type: 'LV_SPOTIFY_TRACK_CHANGED'
+            }).catch(() => {});
+          }, 800);
+        } catch (_) {}
+      } else if (currentTrack && !lastTrackText) {
+        lastTrackText = currentTrack;
+      }
+    };
+
+    // Observe changes in the now-playing widget area
+    const targetNode = document.querySelector('[data-testid="now-playing-widget"]') ||
+                       document.querySelector('footer') ||
+                       document.body;
+    if (targetNode) {
+      const observer = new MutationObserver(() => {
+        checkTrackChange();
+      });
+      observer.observe(targetNode, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+    }
+
+    // Also poll periodically as a fallback
+    setInterval(checkTrackChange, 3000);
+  }
+
+  /* ══════════════════════════════════════
+     TRACK START
+     ══════════════════════════════════════ */
   function startTrack(payload) {
     clearRevealTimers();
     cancelLoop();
@@ -177,7 +432,7 @@
       : [];
 
     const prepared = prepareLines(synced.length ? synced : fakeTimedLyrics(plain));
-    const title = [track.artist, track.title].filter(Boolean).join(' - ') || 'Song found';
+    const title = [track.artist, track.title].filter(Boolean).join(' — ') || 'Song found';
 
     state.active = true;
     state.lines = prepared;
@@ -185,15 +440,28 @@
     state.currentMoment = null;
     state.trackTitle = title;
     state.lyricSource = synced.length ? 'synced' : 'plain fallback';
-    // Adaptive offset: slow songs need lyrics to appear earlier to feel in sync
     state.syncOffsetMs = computeAdaptiveSyncOffset(prepared);
+    state.mediaDriftSamples = [];
+    state.playbackRate = 1;
 
     const media = getMedia();
-    const mediaNow = media && Number.isFinite(media.currentTime)
-      ? media.currentTime * 1000
-      : Number(track.playOffsetMs || 0);
+    let mediaNow;
+    if (state.isSpotify) {
+      const spotMs = getSpotifyCurrentTimeFromDom();
+      mediaNow = spotMs !== null ? spotMs : Number(track.playOffsetMs || 0);
+      state.spotifyCurrentTimeMs = mediaNow;
+      state.spotifyLastPollWall = performance.now();
+      startSpotifyPolling();
+    } else {
+      mediaNow = media && Number.isFinite(media.currentTime)
+        ? media.currentTime * 1000
+        : Number(track.playOffsetMs || 0);
+    }
+
     state.fallbackMediaStartMs = mediaNow;
     state.fallbackStartMs = performance.now();
+    state.lastMediaTime = mediaNow;
+    state.lastWallTime = performance.now();
 
     if (!state.lines.length) {
       setHud('Song found, but no lyrics were returned.', true, true);
@@ -202,10 +470,13 @@
 
     show();
     root.classList.add('lvx-active');
-    setHud(`${title} / ${state.lyricSource} / offset ${formatOffset(state.syncOffsetMs)}`);
+    setHud(`${title} · ${state.lyricSource} · offset ${formatOffset(state.syncOffsetMs)}`);
     startLoop();
   }
 
+  /* ══════════════════════════════════════
+     LRC PARSER
+     ══════════════════════════════════════ */
   function parseLrc(raw) {
     const lines = [];
     String(raw || '').split(/\n+/).forEach((line) => {
@@ -228,28 +499,33 @@
     return lines.sort((a, b) => a.time - b.time);
   }
 
+  /* ══════════════════════════════════════
+     ADAPTIVE SYNC OFFSET
+     Calculates the best offset based on song tempo
+     ══════════════════════════════════════ */
   function computeAdaptiveSyncOffset(lines) {
     if (lines.length < 2) return DEFAULT_SYNC_OFFSET_MS;
-    // Measure average gap between lines (excluding outlier long pauses > 8s)
+
     const gaps = [];
     for (let i = 0; i < lines.length - 1; i++) {
       const g = lines[i + 1].time - lines[i].time;
-      if (g < 8000) gaps.push(g);
+      if (g > 200 && g < 8000) gaps.push(g);
     }
     if (!gaps.length) return DEFAULT_SYNC_OFFSET_MS;
+
     const avgGap = gaps.reduce((s, g) => s + g, 0) / gaps.length;
-    // LRC databases timestamp when the word is ALREADY being sung.
-    // We need to show text early enough to read it before hearing it.
-    // Slow ballads (Sailor Song ~4-5s/line): need the most lead time.
-    if (avgGap >= 4200) return -650; // very slow / ballad
-    if (avgGap >= 3000) return -480; // slow
-    if (avgGap >= 1800) return -280; // mid tempo
-    return DEFAULT_SYNC_OFFSET_MS;   // fast / rap: -180ms
+
+    // LRC timestamps = when word IS being sung
+    // Negative offset = show lyrics BEFORE that timestamp
+    // Goal: text appears ~instantly as you hear it
+    // Tighter offsets for snappier feel
+    if (avgGap >= 4200) return -350;   // very slow ballad
+    if (avgGap >= 3000) return -250;   // slow
+    if (avgGap >= 1800) return -180;   // mid tempo
+    return DEFAULT_SYNC_OFFSET_MS;     // fast / rap: -200ms (was -120ms)
   }
 
   function fakeTimedLyrics(lines) {
-    // Space plain lyrics based on typical pop line length:
-    // short lines (~4 words) get tighter spacing, longer lines get more room
     return lines.map((text, index) => {
       const wc = text.split(/\s+/).filter(Boolean).length;
       const interval = Math.max(2200, Math.min(wc * 420, 4200));
@@ -262,6 +538,9 @@
     });
   }
 
+  /* ══════════════════════════════════════
+     LINE PREPARATION
+     ══════════════════════════════════════ */
   function prepareLines(rawLines) {
     const clean = rawLines
       .map((line) => ({
@@ -289,9 +568,15 @@
         duration,
         repeated,
         role,
-        composition: composeMoment(line.text, role, index, repeated)
+        composition: composeMoment(line.text, role, index, repeated),
+        animation: pickAnimation(index)
       };
     });
+  }
+
+  function pickAnimation(index) {
+    const h = ((index + 1) * 2654435761) >>> 0;
+    return ANIMATIONS[h % ANIMATIONS.length];
   }
 
   function classifyLine(text, duration, repeated) {
@@ -355,18 +640,10 @@
       const head = cleanText(`${hardSplit[1]}${hardSplit[2].trim().match(/but|and/i) ? ` ${hardSplit[2].trim()}` : hardSplit[2]}`);
       const tail = cleanText(hardSplit[3]);
       if (words(tail).length >= 2 && words(tail).length <= 7) {
-        return {
-          support: trimWords(head, 9),
-          main: tail,
-          tag: ''
-        };
+        return { support: trimWords(head, 9), main: tail, tag: '' };
       }
       if (words(tail).length > 7) {
-        return {
-          support: trimWords(head, 8),
-          main: tailWords(tail, 5),
-          tag: ''
-        };
+        return { support: trimWords(head, 8), main: tailWords(tail, 5), tag: '' };
       }
     }
 
@@ -375,33 +652,37 @@
       const mainCount = list.length >= 12 ? 5 : 4;
       const support = list.slice(0, Math.max(3, list.length - mainCount)).join(' ');
       const main = list.slice(-mainCount).join(' ');
-      return {
-        support: trimWords(support, 8),
-        main,
-        tag: ''
-      };
+      return { support: trimWords(support, 8), main, tag: '' };
     }
 
     return { support: '', main: cleaned, tag: '' };
   }
 
+  /* ══════════════════════════════════════
+     LAYOUT SELECTOR (expanded with new layouts)
+     ══════════════════════════════════════ */
   function layoutFor(index, role) {
-    // Use a simple hash so layouts don't cycle predictably (not just index % n)
     const h = ((index + 1) * 2654435761) >>> 0;
 
     const mixedLayouts = [
-      'lvx-layout-ref-a',   'lvx-layout-ref-b',   'lvx-layout-ref-c',
-      'lvx-layout-diag-a',  'lvx-layout-diag-b',  'lvx-layout-split-v',
-      'lvx-layout-asymm-l', 'lvx-layout-asymm-r',
+      'lvx-layout-ref-a',     'lvx-layout-ref-b',     'lvx-layout-ref-c',
+      'lvx-layout-diag-a',    'lvx-layout-diag-b',    'lvx-layout-split-v',
+      'lvx-layout-asymm-l',   'lvx-layout-asymm-r',   'lvx-layout-cinema',
+      'lvx-layout-stack',     'lvx-layout-typewriter', 'lvx-layout-widescreen',
+      'lvx-layout-drift',     'lvx-layout-scatter',    'lvx-layout-cascade',
     ];
     const mainLayouts = [
-      'lvx-layout-center',     'lvx-layout-left',    'lvx-layout-low',
-      'lvx-layout-corner-tl',  'lvx-layout-corner-br',
-      'lvx-layout-edge-r',     'lvx-layout-high',
+      'lvx-layout-center',      'lvx-layout-left',       'lvx-layout-low',
+      'lvx-layout-corner-tl',   'lvx-layout-corner-br',  'lvx-layout-edge-r',
+      'lvx-layout-high',        'lvx-layout-edge-l',     'lvx-layout-typewriter',
+      'lvx-layout-spotlight',   'lvx-layout-widescreen', 'lvx-layout-whisper',
+      'lvx-layout-drift',       'lvx-layout-cascade',
     ];
     const punchLayouts = [
-      'lvx-layout-center',    'lvx-layout-wide',    'lvx-layout-hero',
-      'lvx-layout-corner-tl', 'lvx-layout-left',    'lvx-layout-corner-br',
+      'lvx-layout-center',     'lvx-layout-wide',       'lvx-layout-hero',
+      'lvx-layout-corner-tl',  'lvx-layout-left',       'lvx-layout-corner-br',
+      'lvx-layout-stadium',    'lvx-layout-cinema',     'lvx-layout-spotlight',
+      'lvx-layout-scatter',    'lvx-layout-drift',
     ];
 
     if (role === 'mixed') return mixedLayouts[h % mixedLayouts.length];
@@ -410,6 +691,9 @@
     return mainLayouts[h % mainLayouts.length];
   }
 
+  /* ══════════════════════════════════════
+     MAIN PLAYBACK LOOP (improved sync)
+     ══════════════════════════════════════ */
   function startLoop() {
     cancelLoop();
 
@@ -417,6 +701,7 @@
       if (!state.active) return;
 
       const mediaMs = getMediaTimeMs();
+      updateDriftTracking(mediaMs);
       const lyricClockMs = mediaMs - state.syncOffsetMs;
       const nextIndex = findActiveIndex(lyricClockMs);
 
@@ -442,12 +727,54 @@
     state.rafId = 0;
   }
 
+  /* ══════════════════════════════════════
+     MEDIA TIME (supports Spotify DOM polling + standard)
+     ══════════════════════════════════════ */
   function getMediaTimeMs() {
+    // 1) Standard <video>/<audio> element (YouTube, SoundCloud, etc.)
     const media = getMedia();
-    if (media && Number.isFinite(media.currentTime)) {
+    if (media && Number.isFinite(media.currentTime) && media.duration > 0) {
+      state.playbackRate = media.playbackRate || 1;
       return media.currentTime * 1000;
     }
-    return state.fallbackMediaStartMs + performance.now() - state.fallbackStartMs;
+
+    // 2) Spotify: interpolate from last DOM poll
+    if (state.isSpotify && state.spotifyLastPollWall > 0) {
+      const wallElapsed = performance.now() - state.spotifyLastPollWall;
+      // Interpolate: assume 1x playback between polls
+      return state.spotifyCurrentTimeMs + wallElapsed;
+    }
+
+    // 3) Pure fallback (no media element found)
+    return state.fallbackMediaStartMs + (performance.now() - state.fallbackStartMs);
+  }
+
+  /* ── Drift tracking for auto-adjustment (improved) ── */
+  function updateDriftTracking(mediaMs) {
+    const now = performance.now();
+    if (state.lastWallTime > 0) {
+      const wallDelta = now - state.lastWallTime;
+      const mediaDelta = mediaMs - state.lastMediaTime;
+
+      // Only track when both are moving forward normally
+      if (wallDelta > 30 && wallDelta < 2000 && mediaDelta > 0 && mediaDelta < 2000) {
+        const drift = mediaDelta - wallDelta; // positive = media running fast
+        state.mediaDriftSamples.push(drift);
+        if (state.mediaDriftSamples.length > 15) state.mediaDriftSamples.shift();
+
+        // Start adjusting earlier (5 samples) and more aggressively
+        if (state.mediaDriftSamples.length >= 5) {
+          const avgDrift = state.mediaDriftSamples.reduce((a, b) => a + b, 0) / state.mediaDriftSamples.length;
+          if (Math.abs(avgDrift) > 35) {
+            // More aggressive compensation factor (0.5 vs 0.3)
+            state.syncOffsetMs -= avgDrift * 0.5;
+            state.mediaDriftSamples = [];
+          }
+        }
+      }
+    }
+    state.lastMediaTime = mediaMs;
+    state.lastWallTime = now;
   }
 
   function findActiveIndex(clockMs) {
@@ -467,12 +794,13 @@
 
   function shouldClearLine(line, clockMs) {
     if (!line) return true;
-    // Hold until 120ms before the next line starts (no arbitrary upper cap).
-    // Floor at 1000ms so very short lines don't vanish instantly.
     const hold = Math.max(line.duration - 120, 1000);
     return clockMs > line.time + hold && line.nextTime - line.time > hold + 300;
   }
 
+  /* ══════════════════════════════════════
+     RENDERING
+     ══════════════════════════════════════ */
   function renderIndex(index, clockMs) {
     clearMoment();
     state.currentIndex = index;
@@ -482,7 +810,8 @@
     if (!line || shouldClearLine(line, clockMs)) return;
 
     const moment = document.createElement('div');
-    moment.className = `lvx-moment lvx-role-${line.role} ${line.composition.layout}`;
+    const animClass = line.animation === 'slam' ? '' : `lvx-anim-${line.animation}`;
+    moment.className = `lvx-moment lvx-role-${line.role} ${line.composition.layout} ${animClass}`.trim();
 
     const revealQueue = [];
     line.composition.layers.forEach((layer) => {
@@ -523,17 +852,24 @@
     const total = spans.length;
     if (!total) return;
 
-    // Scale reveal window to actual line duration so slow songs breathe naturally.
-    // Fast rap: duration ~600ms → window ~430ms (snappy)
-    // Mid tempo: duration ~2000ms → window ~1440ms
-    // Slow ballad: duration ~5000ms → window ~3200ms
-    const revealWindow = clamp(line.duration * 0.72, 600, 3800);
-    const step = total <= 3
-      ? clamp(revealWindow / Math.max(1, total), 100, 380)
-      : clamp(revealWindow / Math.max(1, total - 1), 70, 300);
+    // Fast reveal for snappy, instant-feel experience
+    const isSlow = line.duration >= 3500;
+
+    let step;
+    if (isSlow) {
+      // Burst: all words within 200ms (was 300ms)
+      const burstWindow = Math.min(total * 50, 200);
+      step = total <= 1 ? 0 : clamp(burstWindow / (total - 1), 20, 50);
+    } else {
+      // Tighter reveal window for snappier feel
+      const revealWindow = clamp(line.duration * 0.45, 200, 1200);
+      step = total <= 3
+        ? clamp(revealWindow / Math.max(1, total), 40, 150)
+        : clamp(revealWindow / Math.max(1, total - 1), 25, 120);
+    }
 
     spans.forEach((span, index) => {
-      state.revealTimers.push(setTimeout(() => span.classList.add('lvx-in'), 35 + index * step));
+      state.revealTimers.push(setTimeout(() => span.classList.add('lvx-in'), 5 + index * step));
     });
   }
 
@@ -544,7 +880,7 @@
     const old = state.currentMoment;
     state.currentMoment = null;
     old.classList.add('lvx-out');
-    setTimeout(() => old.remove(), 190);
+    setTimeout(() => old.remove(), 160);
   }
 
   function clearRevealTimers() {
@@ -552,6 +888,9 @@
     state.revealTimers = [];
   }
 
+  /* ══════════════════════════════════════
+     TEXT SIZING & LAYOUT
+     ══════════════════════════════════════ */
   function splitRows(text, kind) {
     const list = words(text);
     if (list.length <= 1) return list.length ? [list] : [];
@@ -630,6 +969,9 @@
     }
   }
 
+  /* ══════════════════════════════════════
+     KEYBOARD CONTROLS
+     ══════════════════════════════════════ */
   function handleKeys(event) {
     if (!state.active) return;
     const target = event.target;
@@ -643,15 +985,19 @@
 
     if (event.key === '[' || event.key === ']') {
       event.preventDefault();
-      state.syncOffsetMs += event.key === '[' ? -SYNC_NUDGE_MS : SYNC_NUDGE_MS;
-      setHud(`Sync offset ${formatOffset(state.syncOffsetMs)}  ([ earlier / ] later)`);
-      state.currentIndex = -999;
+      nudgeSync(event.key === '[' ? -SYNC_NUDGE_MS : SYNC_NUDGE_MS);
     }
 
     if (event.key === 'Escape') {
       chrome.runtime.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {});
       teardown();
     }
+  }
+
+  function nudgeSync(deltaMs) {
+    state.syncOffsetMs += deltaMs;
+    setHud(`Sync offset ${formatOffset(state.syncOffsetMs)}  ([ earlier / ] later)`);
+    state.currentIndex = -999; // Force re-render
   }
 
   function pulse() {
@@ -661,6 +1007,9 @@
     setTimeout(() => stage.classList.remove('lvx-hit'), 150);
   }
 
+  /* ══════════════════════════════════════
+     THEME MANAGEMENT
+     ══════════════════════════════════════ */
   function applyTheme(name) {
     state.theme = name;
     if (name === 'samay') {
@@ -681,9 +1030,13 @@
     setHud(`Theme: ${THEME_LABELS[next]}  (T to cycle)`, false, false);
   }
 
+  /* ══════════════════════════════════════
+     TEARDOWN / SHOW
+     ══════════════════════════════════════ */
   function teardown() {
     clearRevealTimers();
     cancelLoop();
+    stopSpotifyPolling();
     state.active = false;
     state.currentIndex = -1;
     state.currentMoment = null;
@@ -711,6 +1064,9 @@
     }
   }
 
+  /* ══════════════════════════════════════
+     UTILITY HELPERS
+     ══════════════════════════════════════ */
   function trimWords(text, maxWords) {
     const list = words(text);
     if (list.length <= maxWords) return cleanText(text);
