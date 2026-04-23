@@ -499,30 +499,48 @@
     return lines.sort((a, b) => a.time - b.time);
   }
 
-  /* ══════════════════════════════════════
-     ADAPTIVE SYNC OFFSET
-     Calculates the best offset based on song tempo
-     ══════════════════════════════════════ */
   function computeAdaptiveSyncOffset(lines) {
     if (lines.length < 2) return DEFAULT_SYNC_OFFSET_MS;
 
     const gaps = [];
+    let totalWords = 0;
     for (let i = 0; i < lines.length - 1; i++) {
       const g = lines[i + 1].time - lines[i].time;
       if (g > 200 && g < 8000) gaps.push(g);
+      totalWords += (lines[i].text || '').split(/\s+/).filter(Boolean).length;
     }
+    totalWords += (lines[lines.length - 1].text || '').split(/\s+/).filter(Boolean).length;
     if (!gaps.length) return DEFAULT_SYNC_OFFSET_MS;
 
     const avgGap = gaps.reduce((s, g) => s + g, 0) / gaps.length;
+    const avgWordsPerLine = totalWords / lines.length;
+    const songDuration = lines[lines.length - 1].time - lines[0].time;
+    const linesPerMinute = songDuration > 0 ? (lines.length / (songDuration / 60000)) : 15;
 
-    // LRC timestamps = when word IS being sung
-    // Negative offset = show lyrics BEFORE that timestamp
-    // Goal: text appears ~instantly as you hear it
-    // Tighter offsets for snappier feel
-    if (avgGap >= 4200) return -350;   // very slow ballad
-    if (avgGap >= 3000) return -250;   // slow
-    if (avgGap >= 1800) return -180;   // mid tempo
-    return DEFAULT_SYNC_OFFSET_MS;     // fast / rap: -200ms (was -120ms)
+    // Smart genre-like detection based on lyric patterns:
+    // - High linesPerMinute + high avgWords = rap/hip-hop → tighter offset
+    // - Low linesPerMinute + low avgWords = ballad → wider offset
+    // - Medium = pop/rock → balanced
+
+    let offset = DEFAULT_SYNC_OFFSET_MS; // -200ms base
+
+    // Tempo-based (from gap analysis)
+    if (avgGap >= 4200) offset = -350;       // very slow ballad
+    else if (avgGap >= 3000) offset = -280;   // slow
+    else if (avgGap >= 2200) offset = -220;   // mid-slow
+    else if (avgGap >= 1400) offset = -180;   // mid-fast
+    else offset = -150;                       // rapid-fire/rap
+
+    // Word density adjustment: dense lines need earlier reveal
+    if (avgWordsPerLine > 8) offset -= 40;    // long sentences — show earlier
+    else if (avgWordsPerLine < 3) offset += 30; // short phrases — can delay slightly
+
+    // Lines-per-minute adjustment
+    if (linesPerMinute > 25) offset -= 30;    // fast song
+    else if (linesPerMinute < 8) offset += 40; // very slow song
+
+    // Clamp to reasonable range
+    return Math.max(-500, Math.min(-80, offset));
   }
 
   function fakeTimedLyrics(lines) {
@@ -822,7 +840,6 @@
     fitMoment(moment);
     state.currentMoment = moment;
     revealWords(revealQueue, line);
-    pulse();
   }
 
   function addTextLayer(moment, text, kind) {
@@ -852,24 +869,30 @@
     const total = spans.length;
     if (!total) return;
 
-    // Fast reveal for snappy, instant-feel experience
-    const isSlow = line.duration >= 3500;
+    // Determine reveal strategy based on line characteristics
+    const wordCount = total;
+    const duration = line.duration || 3000;
+    const wordsPerSec = wordCount / (duration / 1000);
 
     let step;
-    if (isSlow) {
-      // Burst: all words within 200ms (was 300ms)
-      const burstWindow = Math.min(total * 50, 200);
-      step = total <= 1 ? 0 : clamp(burstWindow / (total - 1), 20, 50);
+
+    if (wordCount <= 2) {
+      // Very short line: reveal almost instantly
+      step = 60;
+    } else if (wordsPerSec > 4) {
+      // Rap / fast sections: rapid but visible stagger
+      step = clamp(duration * 0.5 / (wordCount - 1), 30, 80);
+    } else if (wordsPerSec > 2) {
+      // Normal pop/rock tempo: clear word-by-word reveal
+      step = clamp(duration * 0.55 / (wordCount - 1), 60, 180);
     } else {
-      // Tighter reveal window for snappier feel
-      const revealWindow = clamp(line.duration * 0.45, 200, 1200);
-      step = total <= 3
-        ? clamp(revealWindow / Math.max(1, total), 40, 150)
-        : clamp(revealWindow / Math.max(1, total - 1), 25, 120);
+      // Slow ballad: spacious word-by-word with breathing room
+      step = clamp(duration * 0.6 / (wordCount - 1), 100, 280);
     }
 
+    // Reveal words one by one with visible stagger
     spans.forEach((span, index) => {
-      state.revealTimers.push(setTimeout(() => span.classList.add('lvx-in'), 5 + index * step));
+      state.revealTimers.push(setTimeout(() => span.classList.add('lvx-in'), 15 + index * step));
     });
   }
 
@@ -1001,10 +1024,11 @@
   }
 
   function pulse() {
+    // Subtle smooth glow — no red flash
     stage.classList.remove('lvx-hit');
     void stage.offsetWidth;
     stage.classList.add('lvx-hit');
-    setTimeout(() => stage.classList.remove('lvx-hit'), 150);
+    setTimeout(() => stage.classList.remove('lvx-hit'), 300);
   }
 
   /* ══════════════════════════════════════

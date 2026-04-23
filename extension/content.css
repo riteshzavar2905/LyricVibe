@@ -238,15 +238,16 @@
 
 .lvx-stage::after {
   opacity: 0;
+  /* Smooth ambient glow instead of red flash */
   background:
-    linear-gradient(90deg, transparent 0%, rgba(255, 51, 71, 0.18) 45%, rgba(255, 255, 255, 0.08) 50%, transparent 100%);
-  transform: translateX(-18%) rotate(0deg);
-  transition: opacity 120ms ease, transform 180ms ease;
+    radial-gradient(ellipse at 50% 50%, rgba(255, 255, 255, 0.04) 0%, transparent 70%);
+  transform: scale(0.95);
+  transition: opacity 300ms ease, transform 400ms ease;
 }
 
 .lvx-stage.lvx-hit::after {
   opacity: 1;
-  transform: translateX(0) rotate(0deg);
+  transform: scale(1);
 }
 
 /* ── HUD (top-left info bar) ── */
@@ -1108,12 +1109,12 @@
   display: inline-block;
   opacity: 0;
   /* STRAIGHT transform - no rotation, no tilt */
-  transform: translateY(14px) scale(0.92) rotate(0deg);
+  transform: translateY(16px) scale(0.88) rotate(0deg);
   transform-origin: center center;
   transition:
-    opacity 70ms ease,
-    transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
-    filter 160ms ease;
+    opacity 120ms ease-out,
+    transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 200ms ease;
   white-space: nowrap;
   will-change: opacity, transform;
 }
