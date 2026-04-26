@@ -18,7 +18,7 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-async function startCapture({ tabId, streamId, backendUrl, recordMs, hints }) {
+async function startCapture({ tabId, streamId, recordMs, hints }) {
   stopCapture(tabId);
 
   const media = await navigator.mediaDevices.getUserMedia({
@@ -37,46 +37,17 @@ async function startCapture({ tabId, streamId, backendUrl, recordMs, hints }) {
 
   const mimeType = pickMimeType();
   const recorder = new MediaRecorder(media, mimeType ? { mimeType } : undefined);
-  const chunks = [];
 
   activeCapture = { tabId, media, audioContext, recorder };
 
-  recorder.addEventListener('dataavailable', (event) => {
-    if (event.data && event.data.size > 0) chunks.push(event.data);
-  });
-
   recorder.addEventListener('stop', async () => {
     try {
-      chrome.runtime.sendMessage({
-        type: 'LV_OFFSCREEN_STATUS',
-        tabId,
-        text: 'Identifying the song...'
-      });
-
-      const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
-      const audioBase64 = await blobToBase64(blob);
-      const response = await fetch(`${backendUrl}/recognize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode: 'audio',
-          audioBase64,
-          mimeType: blob.type,
-          hints
-        })
-      });
-
-      const payload = await response.json();
-      chrome.runtime.sendMessage({
-        type: 'LV_OFFSCREEN_RESULT',
-        tabId,
-        payload
-      });
-    } catch (error) {
+      // No backend — audio fingerprinting is not available.
+      // Return an error so the service worker can show a clean message.
       chrome.runtime.sendMessage({
         type: 'LV_OFFSCREEN_ERROR',
         tabId,
-        error: error.message
+        error: 'Could not detect this song from metadata. Try playing on YouTube Music, Spotify, or SoundCloud for best results.'
       });
     } finally {
       cleanup();
@@ -122,16 +93,4 @@ function pickMimeType() {
     'audio/ogg;codecs=opus'
   ];
   return choices.find((type) => MediaRecorder.isTypeSupported(type)) || '';
-}
-
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = String(reader.result || '');
-      resolve(result.includes(',') ? result.split(',')[1] : result);
-    };
-    reader.onerror = () => reject(reader.error || new Error('Could not read audio sample.'));
-    reader.readAsDataURL(blob);
-  });
 }
