@@ -1062,7 +1062,7 @@
   function teardown() {
     chaosWordEls.forEach((el) => el.remove());
     chaosWordEls.length = 0;
-    chaosZones.length   = 0;
+    chaosUsedCells.clear();
     clearRevealTimers();
     cancelLoop();
     stopSpotifyPolling();
@@ -1190,38 +1190,38 @@
 
   function chaosRand(min, max) { return min + Math.random() * (max - min); }
 
-  const chaosWordEls = [];
-  const chaosZones   = [];
+  const chaosWordEls  = [];
+  const chaosUsedCells = new Set(); // occupied grid cell indices
 
-  function chaosPickPos(estW, estH) {
-    const vw = window.innerWidth, vh = window.innerHeight, mg = 14;
-    const pad = 18; // breathing room between words
-    for (let a = 0; a < 30; a++) {
-      const x = chaosRand(mg, Math.max(mg + 1, vw - estW - mg));
-      const y = chaosRand(mg + 44, Math.max(mg + 45, vh - estH - mg));
-      const overlap = chaosZones.some((z) =>
-        !(x + estW + pad < z.x - pad ||
-          x - pad > z.x + z.w + pad ||
-          y + estH + pad < z.y - pad ||
-          y - pad > z.y + z.h + pad)
-      );
-      if (!overlap) return { x, y };
+  const CHAOS_COLS = 5;
+  const CHAOS_ROWS = 4;  // 5×4 = 20 cells, one word per cell
+
+  function chaosCellRect(col, row) {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight - 50; // 50px for HUD
+    const cellW = vw / CHAOS_COLS;
+    const cellH = vh / CHAOS_ROWS;
+    return {
+      x: col * cellW,
+      y: 50 + row * cellH,
+      w: cellW,
+      h: cellH
+    };
+  }
+
+  function chaosPickCell() {
+    const total = CHAOS_COLS * CHAOS_ROWS;
+    const free = [];
+    for (let i = 0; i < total; i++) {
+      if (!chaosUsedCells.has(i)) free.push(i);
     }
-    // fallback — find least overlapping spot
-    let bestX = chaosRand(mg, vw - estW - mg);
-    let bestY = chaosRand(44, vh - estH - mg);
-    let bestScore = Infinity;
-    for (let a = 0; a < 12; a++) {
-      const x = chaosRand(mg, Math.max(mg + 1, vw - estW - mg));
-      const y = chaosRand(mg + 44, Math.max(mg + 45, vh - estH - mg));
-      const score = chaosZones.reduce((acc, z) => {
-        const dx = Math.max(0, Math.min(x + estW, z.x + z.w) - Math.max(x, z.x));
-        const dy = Math.max(0, Math.min(y + estH, z.y + z.h) - Math.max(y, z.y));
-        return acc + dx * dy;
-      }, 0);
-      if (score < bestScore) { bestScore = score; bestX = x; bestY = y; }
+    if (!free.length) {
+      // All cells full — clear oldest half
+      const keys = [...chaosUsedCells].slice(0, Math.floor(total / 2));
+      keys.forEach((k) => chaosUsedCells.delete(k));
+      return keys[0] || 0;
     }
-    return { x: bestX, y: bestY };
+    return free[Math.floor(Math.random() * free.length)];
   }
 
   function renderChaosIndex(index, clockMs) {
@@ -1236,10 +1236,10 @@
       state.currentMoment = null;
     }
 
-    if (chaosWordEls.length > 22) {
+    if (chaosWordEls.length > 18) {
       const victims = chaosWordEls.splice(0, 8);
-      chaosZones.splice(0, 8);
       victims.forEach((el) => {
+        chaosUsedCells.delete(Number(el.dataset.cell));
         el.style.transition = 'opacity 0.8s ease, filter 0.8s ease';
         el.style.opacity = '0'; el.style.filter = 'blur(6px)';
         setTimeout(() => el.remove(), 900);
@@ -1247,56 +1247,65 @@
     }
 
     const wordList = words(line.text);
-    const stagger  = Math.max(180, Math.min(400, (line.duration * 0.65) / Math.max(1, wordList.length - 1)));
-    const holdMs   = Math.max(2800, line.duration * 1.8);
+    const stagger  = Math.max(200, Math.min(500, (line.duration * 0.65) / Math.max(1, wordList.length - 1)));
+    const holdMs   = Math.max(3000, line.duration * 2.0);
 
     wordList.forEach((word, i) => {
       state.revealTimers.push(setTimeout(() => {
         if (!state.active || state.theme !== 'chaos') return;
 
-        const fontSize = Math.round(chaosRand(48, 172));
+        const cellIdx  = chaosPickCell();
+        const cell     = chaosCellRect(cellIdx % CHAOS_COLS, Math.floor(cellIdx / CHAOS_COLS));
+        chaosUsedCells.add(cellIdx);
+
+        // Font size fits within cell height, with variation
+        const maxFontH = cell.h * 0.72;
+        const fontSize = Math.round(chaosRand(maxFontH * 0.45, maxFontH));
         const color    = chaosWordColor(word);
-        const estW     = word.length * fontSize * 0.58;
-        const estH     = fontSize * 1.25;
-        const pos      = chaosPickPos(estW, estH);
+
+        // Random position within cell with padding
+        const pad = 10;
+        const x = cell.x + chaosRand(pad, Math.max(pad + 1, cell.w * 0.35));
+        const y = cell.y + chaosRand(pad, Math.max(pad + 1, cell.h - fontSize - pad));
 
         const el = document.createElement('span');
+        el.dataset.cell = String(cellIdx);
         el.textContent = word.toUpperCase();
         el.style.cssText = [
           'position:fixed',
-          `left:${pos.x}px`, `top:${pos.y}px`,
+          `left:${x}px`, `top:${y}px`,
           `font-family:${CHAOS_FONTS[Math.floor(Math.random() * CHAOS_FONTS.length)]}`,
           `font-size:${fontSize}px`,
           `font-weight:${Math.random() > 0.35 ? '900' : '400'}`,
           `color:${color}`,
-          `transform:rotate(${chaosRand(-24, 24).toFixed(1)}deg)`,
+          `transform:rotate(${chaosRand(-18, 18).toFixed(1)}deg)`,
           'opacity:0', 'pointer-events:none', 'z-index:2147483640',
           'line-height:1', 'white-space:nowrap',
-          `letter-spacing:${chaosRand(-1, 5).toFixed(1)}px`,
-          `text-shadow:0 0 ${Math.round(fontSize * 0.28)}px ${color}66,2px 3px 0 rgba(0,0,0,0.45)`,
-          'transition:opacity 0.16s ease,filter 0.16s ease',
+          `letter-spacing:${chaosRand(-1, 4).toFixed(1)}px`,
+          `text-shadow:0 0 ${Math.round(fontSize * 0.25)}px ${color}55,2px 3px 0 rgba(0,0,0,0.5)`,
+          'transition:opacity 0.2s ease,filter 0.2s ease',
           'filter:blur(8px)',
         ].join(';');
 
         stage.appendChild(el);
         chaosWordEls.push(el);
-        chaosZones.push({ x: pos.x, y: pos.y, w: estW, h: estH });
 
         requestAnimationFrame(() => requestAnimationFrame(() => {
-          el.style.opacity = chaosRand(0.78, 1.0).toFixed(2);
+          el.style.opacity = chaosRand(0.82, 1.0).toFixed(2);
           el.style.filter  = 'blur(0px)';
         }));
 
         setTimeout(() => {
           if (!el.isConnected) return;
-          el.style.transition = 'opacity 1.6s ease,filter 1.6s ease';
-          el.style.opacity = '0'; el.style.filter = 'blur(10px)';
+          chaosUsedCells.delete(cellIdx);
+          el.style.transition = 'opacity 1.4s ease,filter 1.4s ease';
+          el.style.opacity = '0'; el.style.filter = 'blur(8px)';
           setTimeout(() => {
             el.remove();
             const idx = chaosWordEls.indexOf(el);
-            if (idx !== -1) { chaosWordEls.splice(idx, 1); chaosZones.splice(idx, 1); }
-          }, 1700);
-        }, holdMs + i * 140);
+            if (idx !== -1) chaosWordEls.splice(idx, 1);
+          }, 1500);
+        }, holdMs + i * 160);
 
       }, i * stagger));
     });
