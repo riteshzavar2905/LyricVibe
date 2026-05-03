@@ -1210,6 +1210,12 @@
     const line = state.lines[index];
     if (!line || shouldClearLine(line, clockMs)) return;
 
+    /* Clear any leftover non-chaos moment from previous theme */
+    if (state.currentMoment) {
+      state.currentMoment.remove();
+      state.currentMoment = null;
+    }
+
     if (chaosWordEls.length > 30) {
       const victims = chaosWordEls.splice(0, 10);
       chaosZones.splice(0, 10);
@@ -1228,7 +1234,7 @@
       state.revealTimers.push(setTimeout(() => {
         if (!state.active || state.theme !== 'chaos') return;
 
-        const fontSize = Math.round(chaosRand(26, 112));
+        const fontSize = Math.round(chaosRand(48, 172));
         const color    = chaosWordColor(word);
         const estW     = word.length * fontSize * 0.58;
         const estH     = fontSize * 1.25;
