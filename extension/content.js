@@ -4,11 +4,11 @@
      ══════════════════════════════════════ */
   const DEFAULT_SYNC_OFFSET_MS = -200;
   const SYNC_NUDGE_MS = 80;
-  const THEMES = ['samay', 'hype', 'soft', 'neon', 'clean', 'retro', 'glass', 'fire', 'elegant', 'aurora', 'matrix', 'vinyl', 'cosmic'];
+  const THEMES = ['samay', 'hype', 'soft', 'neon', 'clean', 'retro', 'glass', 'fire', 'elegant', 'aurora', 'matrix', 'vinyl', 'cosmic', 'chaos'];
   const THEME_LABELS = {
     samay: 'SAMAY', hype: 'HYPE', soft: 'SOFT', neon: 'NEON',
     clean: 'CLEAN', retro: 'RETRO', glass: 'GLASS', fire: 'FIRE', elegant: 'ELEGANT',
-    aurora: 'AURORA', matrix: 'MATRIX', vinyl: 'VINYL', cosmic: 'COSMIC'
+    aurora: 'AURORA', matrix: 'MATRIX', vinyl: 'VINYL', cosmic: 'COSMIC', chaos: 'CHAOS'
   };
   const ANIMATIONS = ['slam', 'fade-up', 'scale-pop', 'slide-left', 'slide-right', 'blur-in', 'glitch', 'typewriter', 'shatter', 'wave'];
 
@@ -820,6 +820,7 @@
      RENDERING
      ══════════════════════════════════════ */
   function renderIndex(index, clockMs) {
+    if (state.theme === 'chaos') { renderChaosIndex(index, clockMs); return; }
     clearMoment();
     state.currentIndex = index;
 
@@ -897,6 +898,7 @@
   }
 
   function clearMoment() {
+    if (state.theme === 'chaos') return;
     clearRevealTimers();
     if (!state.currentMoment) return;
 
@@ -1058,6 +1060,9 @@
      TEARDOWN / SHOW
      ══════════════════════════════════════ */
   function teardown() {
+    chaosWordEls.forEach((el) => el.remove());
+    chaosWordEls.length = 0;
+    chaosZones.length   = 0;
     clearRevealTimers();
     cancelLoop();
     stopSpotifyPolling();
@@ -1127,4 +1132,148 @@
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
+  /* ══════════════════════════════════════
+     CHAOS THEME ENGINE
+     ══════════════════════════════════════ */
+
+  (function () {
+    if (document.getElementById('lvx-chaos-fonts')) return;
+    const link = document.createElement('link');
+    link.id   = 'lvx-chaos-fonts';
+    link.rel  = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Oswald:wght@700&family=Playfair+Display:wght@900&family=Space+Mono:wght@700&family=Righteous&family=Permanent+Marker&family=Black+Han+Sans&family=Boogaloo&display=swap';
+    document.head.appendChild(link);
+  })();
+
+  const CHAOS_FONTS = [
+    '"Bebas Neue", Impact, sans-serif',
+    '"Oswald", "Arial Black", sans-serif',
+    '"Playfair Display", Georgia, serif',
+    '"Space Mono", "Courier New", monospace',
+    '"Righteous", Verdana, sans-serif',
+    '"Permanent Marker", cursive',
+    '"Black Han Sans", Impact, sans-serif',
+    '"Boogaloo", cursive',
+    'Impact, "Arial Black", sans-serif',
+    '"Arial Black", Impact, sans-serif',
+    'Georgia, "Times New Roman", serif',
+    '"Courier New", Courier, monospace',
+    'Verdana, Geneva, sans-serif',
+  ];
+
+  const CHAOS_SENTIMENT = {
+    pain:'#e74c3c', hurt:'#c0392b', hate:'#922b21', fear:'#8e44ad',
+    alone:'#7d3c98', dark:'#6c3483', die:'#c0392b', cry:'#9b59b6',
+    lost:'#8e44ad', broken:'#e74c3c', empty:'#7b241c', dead:'#641e16',
+    hell:'#c0392b', tears:'#a569bd', blood:'#e74c3c', cold:'#2980b9',
+    numb:'#5d6d7e', scar:'#c0392b', war:'#e74c3c', scream:'#c0392b',
+    love:'#f39c12', joy:'#f1c40f', smile:'#f9ca24', happy:'#ffd32a',
+    bright:'#ffc312', sun:'#f9ca24', dance:'#ff9f43', free:'#ffeaa7',
+    life:'#fdcb6e', light:'#f9ca24', laugh:'#ff9f43', dream:'#a29bfe',
+    heart:'#e84393', beautiful:'#fd79a8', heaven:'#74b9ff', gold:'#f9ca24',
+    shine:'#ffd32a', sweet:'#ff7675', good:'#55efc4', best:'#ffd32a',
+    fire:'#e17055', burn:'#d63031', wild:'#e84393', run:'#00b894',
+    fight:'#e17055', power:'#e17055', loud:'#fd79a8', blaze:'#e17055',
+    rage:'#d63031', rise:'#fdcb6e', electric:'#74b9ff', rush:'#e17055',
+    miss:'#74b9ff', gone:'#636e72', old:'#b2bec3', rain:'#74b9ff',
+    wait:'#7f8c8d', still:'#a0a0b0', shadow:'#636e72', ghost:'#9b59b6',
+    memory:'#a29bfe', forget:'#636e72', fade:'#b2bec3', gray:'#95a5a6',
+  };
+
+  function chaosWordColor(word) {
+    const w = word.toLowerCase().replace(/[^a-z]/g, '');
+    if (CHAOS_SENTIMENT[w]) return CHAOS_SENTIMENT[w];
+    let h = 0;
+    for (let i = 0; i < w.length; i++) h = w.charCodeAt(i) + ((h << 5) - h);
+    return `hsl(${((h >>> 0) % 360)},${55 + ((h >>> 4) % 35)}%,${52 + ((h >>> 8) % 28)}%)`;
+  }
+
+  function chaosRand(min, max) { return min + Math.random() * (max - min); }
+
+  const chaosWordEls = [];
+  const chaosZones   = [];
+
+  function chaosPickPos(estW, estH) {
+    const vw = window.innerWidth, vh = window.innerHeight, mg = 14;
+    for (let a = 0; a < 18; a++) {
+      const x = chaosRand(mg, Math.max(mg + 1, vw - estW - mg));
+      const y = chaosRand(mg + 44, Math.max(mg + 45, vh - estH - mg));
+      if (!chaosZones.some((z) => !(x + estW < z.x || x > z.x + z.w || y + estH < z.y || y > z.y + z.h)))
+        return { x, y };
+    }
+    return { x: chaosRand(mg, vw - estW - mg), y: chaosRand(44, vh - estH - mg) };
+  }
+
+  function renderChaosIndex(index, clockMs) {
+    state.currentIndex = index;
+    if (index < 0) return;
+    const line = state.lines[index];
+    if (!line || shouldClearLine(line, clockMs)) return;
+
+    if (chaosWordEls.length > 30) {
+      const victims = chaosWordEls.splice(0, 10);
+      chaosZones.splice(0, 10);
+      victims.forEach((el) => {
+        el.style.transition = 'opacity 0.5s ease, filter 0.5s ease';
+        el.style.opacity = '0'; el.style.filter = 'blur(6px)';
+        setTimeout(() => el.remove(), 600);
+      });
+    }
+
+    const wordList = words(line.text);
+    const stagger  = Math.max(60, Math.min(200, (line.duration * 0.55) / Math.max(1, wordList.length - 1)));
+    const holdMs   = Math.max(3500, line.duration * 2.8);
+
+    wordList.forEach((word, i) => {
+      state.revealTimers.push(setTimeout(() => {
+        if (!state.active || state.theme !== 'chaos') return;
+
+        const fontSize = Math.round(chaosRand(26, 112));
+        const color    = chaosWordColor(word);
+        const estW     = word.length * fontSize * 0.58;
+        const estH     = fontSize * 1.25;
+        const pos      = chaosPickPos(estW, estH);
+
+        const el = document.createElement('span');
+        el.textContent = word.toUpperCase();
+        el.style.cssText = [
+          'position:fixed',
+          `left:${pos.x}px`, `top:${pos.y}px`,
+          `font-family:${CHAOS_FONTS[Math.floor(Math.random() * CHAOS_FONTS.length)]}`,
+          `font-size:${fontSize}px`,
+          `font-weight:${Math.random() > 0.35 ? '900' : '400'}`,
+          `color:${color}`,
+          `transform:rotate(${chaosRand(-24, 24).toFixed(1)}deg)`,
+          'opacity:0', 'pointer-events:none', 'z-index:2147483640',
+          'line-height:1', 'white-space:nowrap',
+          `letter-spacing:${chaosRand(-1, 5).toFixed(1)}px`,
+          `text-shadow:0 0 ${Math.round(fontSize * 0.28)}px ${color}66,2px 3px 0 rgba(0,0,0,0.45)`,
+          'transition:opacity 0.16s ease,filter 0.16s ease',
+          'filter:blur(8px)',
+        ].join(';');
+
+        stage.appendChild(el);
+        chaosWordEls.push(el);
+        chaosZones.push({ x: pos.x, y: pos.y, w: estW, h: estH });
+
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          el.style.opacity = chaosRand(0.78, 1.0).toFixed(2);
+          el.style.filter  = 'blur(0px)';
+        }));
+
+        setTimeout(() => {
+          if (!el.isConnected) return;
+          el.style.transition = 'opacity 1.6s ease,filter 1.6s ease';
+          el.style.opacity = '0'; el.style.filter = 'blur(10px)';
+          setTimeout(() => {
+            el.remove();
+            const idx = chaosWordEls.indexOf(el);
+            if (idx !== -1) { chaosWordEls.splice(idx, 1); chaosZones.splice(idx, 1); }
+          }, 1700);
+        }, holdMs + i * 140);
+
+      }, i * stagger));
+    });
+  }
+
 })();
