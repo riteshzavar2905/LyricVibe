@@ -1195,13 +1195,33 @@
 
   function chaosPickPos(estW, estH) {
     const vw = window.innerWidth, vh = window.innerHeight, mg = 14;
-    for (let a = 0; a < 18; a++) {
+    const pad = 18; // breathing room between words
+    for (let a = 0; a < 30; a++) {
       const x = chaosRand(mg, Math.max(mg + 1, vw - estW - mg));
       const y = chaosRand(mg + 44, Math.max(mg + 45, vh - estH - mg));
-      if (!chaosZones.some((z) => !(x + estW < z.x || x > z.x + z.w || y + estH < z.y || y > z.y + z.h)))
-        return { x, y };
+      const overlap = chaosZones.some((z) =>
+        !(x + estW + pad < z.x - pad ||
+          x - pad > z.x + z.w + pad ||
+          y + estH + pad < z.y - pad ||
+          y - pad > z.y + z.h + pad)
+      );
+      if (!overlap) return { x, y };
     }
-    return { x: chaosRand(mg, vw - estW - mg), y: chaosRand(44, vh - estH - mg) };
+    // fallback — find least overlapping spot
+    let bestX = chaosRand(mg, vw - estW - mg);
+    let bestY = chaosRand(44, vh - estH - mg);
+    let bestScore = Infinity;
+    for (let a = 0; a < 12; a++) {
+      const x = chaosRand(mg, Math.max(mg + 1, vw - estW - mg));
+      const y = chaosRand(mg + 44, Math.max(mg + 45, vh - estH - mg));
+      const score = chaosZones.reduce((acc, z) => {
+        const dx = Math.max(0, Math.min(x + estW, z.x + z.w) - Math.max(x, z.x));
+        const dy = Math.max(0, Math.min(y + estH, z.y + z.h) - Math.max(y, z.y));
+        return acc + dx * dy;
+      }, 0);
+      if (score < bestScore) { bestScore = score; bestX = x; bestY = y; }
+    }
+    return { x: bestX, y: bestY };
   }
 
   function renderChaosIndex(index, clockMs) {
@@ -1216,19 +1236,19 @@
       state.currentMoment = null;
     }
 
-    if (chaosWordEls.length > 30) {
-      const victims = chaosWordEls.splice(0, 10);
-      chaosZones.splice(0, 10);
+    if (chaosWordEls.length > 22) {
+      const victims = chaosWordEls.splice(0, 8);
+      chaosZones.splice(0, 8);
       victims.forEach((el) => {
-        el.style.transition = 'opacity 0.5s ease, filter 0.5s ease';
+        el.style.transition = 'opacity 0.8s ease, filter 0.8s ease';
         el.style.opacity = '0'; el.style.filter = 'blur(6px)';
-        setTimeout(() => el.remove(), 600);
+        setTimeout(() => el.remove(), 900);
       });
     }
 
     const wordList = words(line.text);
-    const stagger  = Math.max(60, Math.min(200, (line.duration * 0.55) / Math.max(1, wordList.length - 1)));
-    const holdMs   = Math.max(3500, line.duration * 2.8);
+    const stagger  = Math.max(180, Math.min(400, (line.duration * 0.65) / Math.max(1, wordList.length - 1)));
+    const holdMs   = Math.max(2800, line.duration * 1.8);
 
     wordList.forEach((word, i) => {
       state.revealTimers.push(setTimeout(() => {
