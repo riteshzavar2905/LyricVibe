@@ -4,11 +4,11 @@
      ══════════════════════════════════════ */
   const DEFAULT_SYNC_OFFSET_MS = -200;
   const SYNC_NUDGE_MS = 80;
-  const THEMES = ['samay', 'hype', 'soft', 'neon', 'clean', 'retro', 'glass', 'fire', 'elegant', 'aurora', 'matrix', 'vinyl', 'cosmic', 'chaos'];
+  const THEMES = ['samay', 'hype', 'soft', 'neon', 'clean', 'retro', 'glass', 'fire', 'elegant', 'aurora', 'matrix', 'vinyl', 'cosmic'];
   const THEME_LABELS = {
     samay: 'SAMAY', hype: 'HYPE', soft: 'SOFT', neon: 'NEON',
     clean: 'CLEAN', retro: 'RETRO', glass: 'GLASS', fire: 'FIRE', elegant: 'ELEGANT',
-    aurora: 'AURORA', matrix: 'MATRIX', vinyl: 'VINYL', cosmic: 'COSMIC', chaos: 'CHAOS'
+    aurora: 'AURORA', matrix: 'MATRIX', vinyl: 'VINYL', cosmic: 'COSMIC'
   };
   const ANIMATIONS = ['slam', 'fade-up', 'scale-pop', 'slide-left', 'slide-right', 'blur-in', 'glitch', 'typewriter', 'shatter', 'wave'];
 
@@ -820,7 +820,6 @@
      RENDERING
      ══════════════════════════════════════ */
   function renderIndex(index, clockMs) {
-    if (state.theme === 'chaos') { renderChaosIndex(index, clockMs); return; }
     clearMoment();
     state.currentIndex = index;
 
@@ -898,7 +897,6 @@
   }
 
   function clearMoment() {
-    if (state.theme === 'chaos') return;
     clearRevealTimers();
     if (!state.currentMoment) return;
 
@@ -1060,9 +1058,6 @@
      TEARDOWN / SHOW
      ══════════════════════════════════════ */
   function teardown() {
-    chaosWordEls.forEach((el) => el.remove());
-    chaosWordEls.length = 0;
-    chaosUsedCells.clear();
     clearRevealTimers();
     cancelLoop();
     stopSpotifyPolling();
@@ -1132,183 +1127,4 @@
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
-  /* ══════════════════════════════════════
-     CHAOS THEME ENGINE
-     ══════════════════════════════════════ */
-
-  (function () {
-    if (document.getElementById('lvx-chaos-fonts')) return;
-    const link = document.createElement('link');
-    link.id   = 'lvx-chaos-fonts';
-    link.rel  = 'stylesheet';
-    link.href = 'https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Oswald:wght@700&family=Playfair+Display:wght@900&family=Space+Mono:wght@700&family=Righteous&family=Permanent+Marker&family=Black+Han+Sans&family=Boogaloo&display=swap';
-    document.head.appendChild(link);
-  })();
-
-  const CHAOS_FONTS = [
-    '"Bebas Neue", Impact, sans-serif',
-    '"Oswald", "Arial Black", sans-serif',
-    '"Playfair Display", Georgia, serif',
-    '"Space Mono", "Courier New", monospace',
-    '"Righteous", Verdana, sans-serif',
-    '"Permanent Marker", cursive',
-    '"Black Han Sans", Impact, sans-serif',
-    '"Boogaloo", cursive',
-    'Impact, "Arial Black", sans-serif',
-    '"Arial Black", Impact, sans-serif',
-    'Georgia, "Times New Roman", serif',
-    '"Courier New", Courier, monospace',
-    'Verdana, Geneva, sans-serif',
-  ];
-
-  const CHAOS_SENTIMENT = {
-    pain:'#e74c3c', hurt:'#c0392b', hate:'#922b21', fear:'#8e44ad',
-    alone:'#7d3c98', dark:'#6c3483', die:'#c0392b', cry:'#9b59b6',
-    lost:'#8e44ad', broken:'#e74c3c', empty:'#7b241c', dead:'#641e16',
-    hell:'#c0392b', tears:'#a569bd', blood:'#e74c3c', cold:'#2980b9',
-    numb:'#5d6d7e', scar:'#c0392b', war:'#e74c3c', scream:'#c0392b',
-    love:'#f39c12', joy:'#f1c40f', smile:'#f9ca24', happy:'#ffd32a',
-    bright:'#ffc312', sun:'#f9ca24', dance:'#ff9f43', free:'#ffeaa7',
-    life:'#fdcb6e', light:'#f9ca24', laugh:'#ff9f43', dream:'#a29bfe',
-    heart:'#e84393', beautiful:'#fd79a8', heaven:'#74b9ff', gold:'#f9ca24',
-    shine:'#ffd32a', sweet:'#ff7675', good:'#55efc4', best:'#ffd32a',
-    fire:'#e17055', burn:'#d63031', wild:'#e84393', run:'#00b894',
-    fight:'#e17055', power:'#e17055', loud:'#fd79a8', blaze:'#e17055',
-    rage:'#d63031', rise:'#fdcb6e', electric:'#74b9ff', rush:'#e17055',
-    miss:'#74b9ff', gone:'#636e72', old:'#b2bec3', rain:'#74b9ff',
-    wait:'#7f8c8d', still:'#a0a0b0', shadow:'#636e72', ghost:'#9b59b6',
-    memory:'#a29bfe', forget:'#636e72', fade:'#b2bec3', gray:'#95a5a6',
-  };
-
-  function chaosWordColor(word) {
-    const w = word.toLowerCase().replace(/[^a-z]/g, '');
-    if (CHAOS_SENTIMENT[w]) return CHAOS_SENTIMENT[w];
-    let h = 0;
-    for (let i = 0; i < w.length; i++) h = w.charCodeAt(i) + ((h << 5) - h);
-    return `hsl(${((h >>> 0) % 360)},${55 + ((h >>> 4) % 35)}%,${52 + ((h >>> 8) % 28)}%)`;
-  }
-
-  function chaosRand(min, max) { return min + Math.random() * (max - min); }
-
-  const chaosWordEls  = [];
-  const chaosUsedCells = new Set(); // occupied grid cell indices
-
-  const CHAOS_COLS = 5;
-  const CHAOS_ROWS = 4;  // 5×4 = 20 cells, one word per cell
-
-  function chaosCellRect(col, row) {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight - 50; // 50px for HUD
-    const cellW = vw / CHAOS_COLS;
-    const cellH = vh / CHAOS_ROWS;
-    return {
-      x: col * cellW,
-      y: 50 + row * cellH,
-      w: cellW,
-      h: cellH
-    };
-  }
-
-  function chaosPickCell() {
-    const total = CHAOS_COLS * CHAOS_ROWS;
-    const free = [];
-    for (let i = 0; i < total; i++) {
-      if (!chaosUsedCells.has(i)) free.push(i);
-    }
-    if (!free.length) {
-      // All cells full — clear oldest half
-      const keys = [...chaosUsedCells].slice(0, Math.floor(total / 2));
-      keys.forEach((k) => chaosUsedCells.delete(k));
-      return keys[0] || 0;
-    }
-    return free[Math.floor(Math.random() * free.length)];
-  }
-
-  function renderChaosIndex(index, clockMs) {
-    state.currentIndex = index;
-    if (index < 0) return;
-    const line = state.lines[index];
-    if (!line || shouldClearLine(line, clockMs)) return;
-
-    /* Clear any leftover non-chaos moment from previous theme */
-    if (state.currentMoment) {
-      state.currentMoment.remove();
-      state.currentMoment = null;
-    }
-
-    if (chaosWordEls.length > 18) {
-      const victims = chaosWordEls.splice(0, 8);
-      victims.forEach((el) => {
-        chaosUsedCells.delete(Number(el.dataset.cell));
-        el.style.transition = 'opacity 0.8s ease, filter 0.8s ease';
-        el.style.opacity = '0'; el.style.filter = 'blur(6px)';
-        setTimeout(() => el.remove(), 900);
-      });
-    }
-
-    const wordList = words(line.text);
-    const stagger  = Math.max(200, Math.min(500, (line.duration * 0.65) / Math.max(1, wordList.length - 1)));
-    const holdMs   = Math.max(3000, line.duration * 2.0);
-
-    wordList.forEach((word, i) => {
-      state.revealTimers.push(setTimeout(() => {
-        if (!state.active || state.theme !== 'chaos') return;
-
-        const cellIdx  = chaosPickCell();
-        const cell     = chaosCellRect(cellIdx % CHAOS_COLS, Math.floor(cellIdx / CHAOS_COLS));
-        chaosUsedCells.add(cellIdx);
-
-        // Font size fits within cell height, with variation
-        const maxFontH = cell.h * 0.72;
-        const fontSize = Math.round(chaosRand(maxFontH * 0.45, maxFontH));
-        const color    = chaosWordColor(word);
-
-        // Random position within cell with padding
-        const pad = 10;
-        const x = cell.x + chaosRand(pad, Math.max(pad + 1, cell.w * 0.35));
-        const y = cell.y + chaosRand(pad, Math.max(pad + 1, cell.h - fontSize - pad));
-
-        const el = document.createElement('span');
-        el.dataset.cell = String(cellIdx);
-        el.textContent = word.toUpperCase();
-        el.style.cssText = [
-          'position:fixed',
-          `left:${x}px`, `top:${y}px`,
-          `font-family:${CHAOS_FONTS[Math.floor(Math.random() * CHAOS_FONTS.length)]}`,
-          `font-size:${fontSize}px`,
-          `font-weight:${Math.random() > 0.35 ? '900' : '400'}`,
-          `color:${color}`,
-          `transform:rotate(${chaosRand(-18, 18).toFixed(1)}deg)`,
-          'opacity:0', 'pointer-events:none', 'z-index:2147483640',
-          'line-height:1', 'white-space:nowrap',
-          `letter-spacing:${chaosRand(-1, 4).toFixed(1)}px`,
-          `text-shadow:0 0 ${Math.round(fontSize * 0.25)}px ${color}55,2px 3px 0 rgba(0,0,0,0.5)`,
-          'transition:opacity 0.2s ease,filter 0.2s ease',
-          'filter:blur(8px)',
-        ].join(';');
-
-        stage.appendChild(el);
-        chaosWordEls.push(el);
-
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-          el.style.opacity = chaosRand(0.82, 1.0).toFixed(2);
-          el.style.filter  = 'blur(0px)';
-        }));
-
-        setTimeout(() => {
-          if (!el.isConnected) return;
-          chaosUsedCells.delete(cellIdx);
-          el.style.transition = 'opacity 1.4s ease,filter 1.4s ease';
-          el.style.opacity = '0'; el.style.filter = 'blur(8px)';
-          setTimeout(() => {
-            el.remove();
-            const idx = chaosWordEls.indexOf(el);
-            if (idx !== -1) chaosWordEls.splice(idx, 1);
-          }, 1500);
-        }, holdMs + i * 160);
-
-      }, i * stagger));
-    });
-  }
-
 })();
