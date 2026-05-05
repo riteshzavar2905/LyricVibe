@@ -221,6 +221,15 @@
         '';
       // Spotify album from now-playing widget
       hints.album = spotifyAlbumFromWidget() || '';
+
+      // FALLBACK: If DOM selectors failed, parse from page title
+      // Spotify titles look like "Song Name · Artist Name | Spotify"
+      if (!hints.track && title) {
+        const parsed = parseSpotifyTitle(title);
+        if (parsed.track) hints.track = parsed.track;
+        if (parsed.artist) hints.artist = parsed.artist;
+      }
+
       // Spotify time from DOM (no <audio>/<video> element exposed)
       const spotifyTime = getSpotifyCurrentTimeFromDom();
       if (spotifyTime !== null) {
@@ -310,6 +319,25 @@
     return '';
   }
 
+  function parseSpotifyTitle(title) {
+    // Spotify page titles: "Song Name · Artist Name | Spotify" or "Song - Artist | Spotify"
+    let cleaned = (title || '')
+      .replace(/\s*[|·•]\s*Spotify\s*$/i, '')
+      .replace(/\s*-\s*Spotify\s*$/i, '')
+      .trim();
+    // Try "Song · Artist" format
+    const dotSplit = cleaned.split(' · ');
+    if (dotSplit.length >= 2) {
+      return { track: dotSplit[0].trim(), artist: dotSplit.slice(1).join(' ').trim() };
+    }
+    // Try "Artist - Song" format
+    const dashSplit = cleaned.split(' - ');
+    if (dashSplit.length >= 2) {
+      return { track: dashSplit[1].trim(), artist: dashSplit[0].trim() };
+    }
+    return { track: cleaned, artist: '' };
+  }
+
   function getSpotifyCurrentTimeFromDom() {
     // Spotify shows current time as text like "1:23"
     const el = document.querySelector('[data-testid="playback-position"]') ||
@@ -385,11 +413,14 @@
 
     state.spotifyPollInterval = setInterval(() => {
       const ms = getSpotifyCurrentTimeFromDom();
-      if (ms !== null) {
+      if (ms !== null && ms !== state.spotifyCurrentTimeMs) {
+        // Only update anchor when the time VALUE actually changes
+        // (Spotify text updates ~1x/sec, polling at 30ms just re-reads same value)
+        // This enables proper interpolation between text updates
         state.spotifyCurrentTimeMs = ms;
         state.spotifyLastPollWall = performance.now();
       }
-    }, 30); // Poll ~33x per second for tighter sync interpolation
+    }, 30);
   }
 
   function stopSpotifyPolling() {
@@ -420,7 +451,7 @@
             chrome.runtime.sendMessage({
               type: 'LV_SPOTIFY_TRACK_CHANGED'
             }).catch(() => {});
-          }, 800);
+          }, 300);
         } catch (_) {}
       } else if (currentTrack && !lastTrackText) {
         lastTrackText = currentTrack;
