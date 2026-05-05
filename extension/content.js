@@ -190,13 +190,15 @@
         textFrom('yt-formatted-string.title');
       hints.artist = textFrom('.byline.ytmusic-player-bar a') ||
         textFrom('ytmusic-player-bar .byline a');
+      // Try to get album from YouTube Music
+      hints.album = textFrom('ytmusic-player-bar .byline a:nth-child(3)') ||
+        textFrom('ytmusic-player-bar .subtitle a[href*="browse/"]') || '';
     } else if (host.includes('youtube.com')) {
       hints.track = textFrom('h1 yt-formatted-string') ||
         textFrom('h1.title') ||
         title.replace(/ - YouTube$/i, '');
     } else if (host.includes('spotify.com')) {
       /* ── SPOTIFY ENHANCED SELECTORS (2026) ── */
-      // Try multiple selectors — Spotify's DOM changes frequently
       hints.track =
         textFrom('[data-testid="context-item-info-title"]') ||
         textFrom('[data-testid="now-playing-widget"] [data-testid="context-item-info-title"]') ||
@@ -217,6 +219,8 @@
         spotifyArtistFromNowPlaying() ||
         spotifyArtistFromFooter() ||
         '';
+      // Spotify album from now-playing widget
+      hints.album = spotifyAlbumFromWidget() || '';
       // Spotify time from DOM (no <audio>/<video> element exposed)
       const spotifyTime = getSpotifyCurrentTimeFromDom();
       if (spotifyTime !== null) {
@@ -282,6 +286,26 @@
     const links = footer.querySelectorAll('a');
     for (const link of links) {
       if (link.href && link.href.includes('/artist/')) return link.textContent.trim();
+    }
+    return '';
+  }
+
+  function spotifyAlbumFromWidget() {
+    // Try to get album name from the now-playing widget
+    const widget = document.querySelector('[data-testid="now-playing-widget"]');
+    if (widget) {
+      const links = widget.querySelectorAll('a');
+      for (const link of links) {
+        if (link.href && link.href.includes('/album/')) return link.textContent.trim();
+      }
+    }
+    // Fallback: footer area
+    const footer = document.querySelector('footer') || document.querySelector('[data-testid="now-playing-bar"]');
+    if (footer) {
+      const links = footer.querySelectorAll('a');
+      for (const link of links) {
+        if (link.href && link.href.includes('/album/')) return link.textContent.trim();
+      }
     }
     return '';
   }
@@ -365,7 +389,7 @@
         state.spotifyCurrentTimeMs = ms;
         state.spotifyLastPollWall = performance.now();
       }
-    }, 50); // Poll 20x per second for tight sync interpolation
+    }, 30); // Poll ~33x per second for tighter sync interpolation
   }
 
   function stopSpotifyPolling() {
