@@ -2,7 +2,7 @@
   /* ══════════════════════════════════════
      CONSTANTS & CONFIG
      ══════════════════════════════════════ */
-  const DEFAULT_SYNC_OFFSET_MS = -200;
+  const DEFAULT_SYNC_OFFSET_MS = -80;
   const SYNC_NUDGE_MS = 80;
   const THEMES = ['samay', 'hype', 'soft', 'neon', 'clean', 'retro', 'glass', 'fire', 'elegant', 'aurora', 'matrix', 'vinyl', 'cosmic'];
   const THEME_LABELS = {
@@ -48,6 +48,10 @@
     lastWallTime: 0,
     mediaDriftSamples: [],
     playbackRate: 1,
+    // Real-time auto-calibration
+    timingErrors: [],        // recent render timing errors vs LRC timestamp
+    autoCalibrated: false,   // true after first calibration pass
+    baseOffsetMs: DEFAULT_SYNC_OFFSET_MS, // original computed offset
     // Spotify-specific: polling for time from DOM
     spotifyPollInterval: 0,
     spotifyCurrentTimeMs: 0,
@@ -300,7 +304,9 @@
       const val = parseFloat(bar.value);
       const max = parseFloat(bar.max);
       if (Number.isFinite(val) && Number.isFinite(max) && max > 0) {
-        return val; // Sometimes value is already in ms or seconds
+        // Spotify range input: value and max are both in milliseconds
+        // Sanity check: if max > 600000 (10 min) it's likely in ms, else seconds
+        return max > 600000 ? val : val * 1000;
       }
     }
     // Last resort: check for any time-display element in the footer
@@ -359,7 +365,7 @@
         state.spotifyCurrentTimeMs = ms;
         state.spotifyLastPollWall = performance.now();
       }
-    }, 150); // Poll ~7x per second for tighter sync interpolation
+    }, 50); // Poll 20x per second for tight sync interpolation
   }
 
   function stopSpotifyPolling() {
@@ -441,6 +447,9 @@
     state.trackTitle = title;
     state.lyricSource = synced.length ? 'synced' : 'plain fallback';
     state.syncOffsetMs = computeAdaptiveSyncOffset(prepared);
+    state.baseOffsetMs = state.syncOffsetMs;
+    state.timingErrors = [];
+    state.autoCalibrated = false;
     state.mediaDriftSamples = [];
     state.playbackRate = 1;
 
@@ -504,43 +513,48 @@
 
     const gaps = [];
     let totalWords = 0;
+
     for (let i = 0; i < lines.length - 1; i++) {
       const g = lines[i + 1].time - lines[i].time;
-      if (g > 200 && g < 8000) gaps.push(g);
+      if (g > 150 && g < 10000) gaps.push(g);
       totalWords += (lines[i].text || '').split(/\s+/).filter(Boolean).length;
     }
     totalWords += (lines[lines.length - 1].text || '').split(/\s+/).filter(Boolean).length;
+
     if (!gaps.length) return DEFAULT_SYNC_OFFSET_MS;
 
-    const avgGap = gaps.reduce((s, g) => s + g, 0) / gaps.length;
+    // Use MEDIAN gap (not mean) — immune to long instrumental breaks skewing the result
+    gaps.sort((a, b) => a - b);
+    const medianGap = gaps[Math.floor(gaps.length / 2)];
     const avgWordsPerLine = totalWords / lines.length;
-    const songDuration = lines[lines.length - 1].time - lines[0].time;
-    const linesPerMinute = songDuration > 0 ? (lines.length / (songDuration / 60000)) : 15;
 
-    // Smart genre-like detection based on lyric patterns:
-    // - High linesPerMinute + high avgWords = rap/hip-hop → tighter offset
-    // - Low linesPerMinute + low avgWords = ballad → wider offset
-    // - Medium = pop/rock → balanced
+    // Detect genre/tempo from lyric patterns
+    // LRCLIB timestamps are already well-placed — we just need small lead for rendering
+    let offset;
 
-    let offset = DEFAULT_SYNC_OFFSET_MS; // -200ms base
+    if (medianGap < 900) {
+      // Rapid-fire rap / drill: needs visible lead
+      offset = -160;
+    } else if (medianGap < 1600) {
+      // Fast pop / hip-hop
+      offset = -120;
+    } else if (medianGap < 2600) {
+      // Normal pop / rock
+      offset = -90;
+    } else if (medianGap < 4000) {
+      // Slow song
+      offset = -65;
+    } else {
+      // Very slow ballad: barely any lead — LRC timestamps are usually right on time
+      offset = -45;
+    }
 
-    // Tempo-based (from gap analysis)
-    if (avgGap >= 4200) offset = -350;       // very slow ballad
-    else if (avgGap >= 3000) offset = -280;   // slow
-    else if (avgGap >= 2200) offset = -220;   // mid-slow
-    else if (avgGap >= 1400) offset = -180;   // mid-fast
-    else offset = -150;                       // rapid-fire/rap
+    // Dense lines (many words) need a touch more lead to read ahead
+    if (avgWordsPerLine > 9) offset -= 15;
+    else if (avgWordsPerLine < 3) offset += 10; // short phrases can arrive a bit later
 
-    // Word density adjustment: dense lines need earlier reveal
-    if (avgWordsPerLine > 8) offset -= 40;    // long sentences — show earlier
-    else if (avgWordsPerLine < 3) offset += 30; // short phrases — can delay slightly
-
-    // Lines-per-minute adjustment
-    if (linesPerMinute > 25) offset -= 30;    // fast song
-    else if (linesPerMinute < 8) offset += 40; // very slow song
-
-    // Clamp to reasonable range
-    return Math.max(-500, Math.min(-80, offset));
+    // Hard clamp — never more than -180ms early, never positive
+    return Math.max(-180, Math.min(-30, offset));
   }
 
   function fakeTimedLyrics(lines) {
@@ -767,26 +781,26 @@
     return state.fallbackMediaStartMs + (performance.now() - state.fallbackStartMs);
   }
 
-  /* ── Drift tracking for auto-adjustment (improved) ── */
+  /* ── Drift tracking: only correct for playback rate deviation, not base offset ── */
   function updateDriftTracking(mediaMs) {
     const now = performance.now();
     if (state.lastWallTime > 0) {
       const wallDelta = now - state.lastWallTime;
       const mediaDelta = mediaMs - state.lastMediaTime;
 
-      // Only track when both are moving forward normally
-      if (wallDelta > 30 && wallDelta < 2000 && mediaDelta > 0 && mediaDelta < 2000) {
-        const drift = mediaDelta - wallDelta; // positive = media running fast
-        state.mediaDriftSamples.push(drift);
-        if (state.mediaDriftSamples.length > 15) state.mediaDriftSamples.shift();
+      // Only track when both are moving forward in a normal range
+      if (wallDelta > 50 && wallDelta < 1500 && mediaDelta > 0 && mediaDelta < 1500) {
+        const rate = mediaDelta / wallDelta; // actual playback rate
+        if (rate > 0.5 && rate < 2.0) {
+          state.mediaDriftSamples.push(rate);
+          if (state.mediaDriftSamples.length > 20) state.mediaDriftSamples.shift();
 
-        // Start adjusting earlier (5 samples) and more aggressively
-        if (state.mediaDriftSamples.length >= 5) {
-          const avgDrift = state.mediaDriftSamples.reduce((a, b) => a + b, 0) / state.mediaDriftSamples.length;
-          if (Math.abs(avgDrift) > 35) {
-            // More aggressive compensation factor (0.5 vs 0.3)
-            state.syncOffsetMs -= avgDrift * 0.5;
-            state.mediaDriftSamples = [];
+          if (state.mediaDriftSamples.length >= 8) {
+            const avgRate = state.mediaDriftSamples.reduce((a, b) => a + b, 0) / state.mediaDriftSamples.length;
+            // Only adjust if rate is meaningfully different from 1x (>2% deviation)
+            if (Math.abs(avgRate - 1.0) > 0.02) {
+              state.playbackRate = avgRate;
+            }
           }
         }
       }
@@ -812,8 +826,9 @@
 
   function shouldClearLine(line, clockMs) {
     if (!line) return true;
-    const hold = Math.max(line.duration - 120, 1000);
-    return clockMs > line.time + hold && line.nextTime - line.time > hold + 300;
+    // Hold until 92% of the line duration or at least 900ms
+    const hold = Math.max(Math.round(line.duration * 0.92), 900);
+    return clockMs > line.time + hold && line.nextTime - line.time > hold + 200;
   }
 
   /* ══════════════════════════════════════
@@ -826,6 +841,43 @@
     if (index < 0) return;
     const line = state.lines[index];
     if (!line || shouldClearLine(line, clockMs)) return;
+
+    /* ── Real-time auto-calibration ──
+       Measure how far ahead/behind we are vs the LRC timestamp each time a line renders.
+       If we're consistently early or late, gently shift syncOffsetMs to correct it.
+       Target: mediaMs should be within ±60ms of line.time when line renders.
+       Skips the first line (often instrumental intro) and lines that are re-renders. */
+    if (index > 0 && index !== state.currentIndex) {
+      const currentMediaMs = getMediaTimeMs();
+      const timingError = currentMediaMs - line.time;
+      // timingError < 0 means we're showing line before LRC time (too early)
+      // timingError > 0 means we're showing line after LRC time (too late)
+      // Ideal range: [-60, +60]ms — if outside this, collect for correction
+
+      state.timingErrors.push(timingError);
+      if (state.timingErrors.length > 6) state.timingErrors.shift();
+
+      if (state.timingErrors.length >= 4) {
+        const avg = state.timingErrors.reduce((a, b) => a + b, 0) / state.timingErrors.length;
+        // Only auto-correct if consistent error > 80ms
+        if (Math.abs(avg) > 80) {
+          // Shift syncOffsetMs to correct:
+          // syncOffsetMs is subtracted from mediaMs to get lyricClockMs
+          // lyricClockMs must reach line.time to trigger render
+          // If avg timingError < 0 (too early): mediaMs < line.time at render
+          //   → need lyricClockMs to be higher → decrease syncOffsetMs (more negative) — wait
+          //   Actually: lyricClockMs = mediaMs - syncOffsetMs
+          //   Line renders when lyricClockMs >= line.time → mediaMs - syncOffsetMs >= line.time
+          //   → mediaMs >= line.time + syncOffsetMs
+          //   If avg < 0: mediaMs at render < line.time, meaning syncOffsetMs is too negative
+          //   → increase syncOffsetMs (toward 0) to require higher mediaMs before rendering
+          const correction = avg * 0.35; // 35% of error, gentle
+          const newOffset = clamp(state.syncOffsetMs + correction, -280, 150);
+          state.syncOffsetMs = newOffset;
+          state.timingErrors = [];
+        }
+      }
+    }
 
     const moment = document.createElement('div');
     const animClass = line.animation === 'slam' ? '' : `lvx-anim-${line.animation}`;
@@ -869,7 +921,6 @@
     const total = spans.length;
     if (!total) return;
 
-    // Determine reveal strategy based on line characteristics
     const wordCount = total;
     const duration = line.duration || 3000;
     const wordsPerSec = wordCount / (duration / 1000);
@@ -877,22 +928,22 @@
     let step;
 
     if (wordCount <= 2) {
-      // Very short line: reveal almost instantly
-      step = 60;
+      step = 55;
     } else if (wordsPerSec > 4) {
-      // Rap / fast sections: rapid but visible stagger
-      step = clamp(duration * 0.5 / (wordCount - 1), 30, 80);
+      // Rap / fast: tight stagger but all words visible before line ends
+      step = clamp(duration * 0.45 / (wordCount - 1), 25, 70);
     } else if (wordsPerSec > 2) {
-      // Normal pop/rock tempo: clear word-by-word reveal
-      step = clamp(duration * 0.55 / (wordCount - 1), 60, 180);
+      // Normal pop/rock
+      step = clamp(duration * 0.50 / (wordCount - 1), 55, 160);
     } else {
-      // Slow ballad: spacious word-by-word with breathing room
-      step = clamp(duration * 0.6 / (wordCount - 1), 100, 280);
+      // Slow ballad: spacious but still spread within the line
+      step = clamp(duration * 0.55 / (wordCount - 1), 90, 260);
     }
 
-    // Reveal words one by one with visible stagger
+    // First word at 0ms — appears exactly when line triggers (at LRC timestamp)
+    // Subsequent words cascade from there
     spans.forEach((span, index) => {
-      state.revealTimers.push(setTimeout(() => span.classList.add('lvx-in'), 15 + index * step));
+      state.revealTimers.push(setTimeout(() => span.classList.add('lvx-in'), index * step));
     });
   }
 
@@ -1019,8 +1070,10 @@
 
   function nudgeSync(deltaMs) {
     state.syncOffsetMs += deltaMs;
+    state.baseOffsetMs = state.syncOffsetMs; // anchor to manual nudge
+    state.timingErrors = [];                 // clear calibration history
     setHud(`Sync offset ${formatOffset(state.syncOffsetMs)}  ([ earlier / ] later)`);
-    state.currentIndex = -999; // Force re-render
+    state.currentIndex = -999;
   }
 
   function pulse() {
@@ -1064,6 +1117,8 @@
     state.active = false;
     state.currentIndex = -1;
     state.currentMoment = null;
+    state.timingErrors = [];
+    state.autoCalibrated = false;
     root.classList.remove('lvx-active');
     stage.textContent = '';
     root.remove();
