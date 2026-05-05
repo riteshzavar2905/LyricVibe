@@ -82,11 +82,23 @@ async function startSession(tab) {
 
   // STEP 2: Spotify — metadata only, no tab capture
   if (isSpotify) {
+    // Wait a moment for Spotify's DOM to fully render track info
+    await new Promise((r) => setTimeout(r, 600));
     const retryHints = await getPageHints(tabId);
     if (retryHints.track || retryHints.pageTitle) {
       const retryResult = await recognize({ mode: 'metadata', hints: retryHints });
       if (retryResult && retryResult.ok && hasUsableLyrics(retryResult)) {
         await handleRecognitionResult(tabId, retryResult);
+        return;
+      }
+    }
+    // One more retry with longer wait
+    await new Promise((r) => setTimeout(r, 1200));
+    const finalHints = await getPageHints(tabId);
+    if (finalHints.track || finalHints.pageTitle) {
+      const finalResult = await recognize({ mode: 'metadata', hints: finalHints });
+      if (finalResult && finalResult.ok && hasUsableLyrics(finalResult)) {
+        await handleRecognitionResult(tabId, finalResult);
         return;
       }
     }
@@ -202,6 +214,23 @@ function trackFromHints(hints) {
 }
 
 async function findLyrics(track, hints) {
+  // PRIORITY 1: LRCLIB direct metadata lookup — most accurate, uses exact title+artist+duration
+  // This is far better than search for Spotify/YouTube Music where we have exact metadata
+  if (track.title && track.artist) {
+    const direct = await getLrclibByMetadata(track);
+    if (direct && (direct.syncedLyrics || direct.plainLyrics)) {
+      return {
+        lyrics: {
+          synced: direct.syncedLyrics || '',
+          plain: cleanPlainLyrics(direct.plainLyrics || ''),
+          provider: 'LRCLIB'
+        },
+        match: direct
+      };
+    }
+  }
+
+  // PRIORITY 2: Search fallback — used when direct lookup fails or no artist available
   const queries = buildLyricQueries(track, hints);
 
   for (const query of queries) {
@@ -222,6 +251,26 @@ async function findLyrics(track, hints) {
   }
 
   return null;
+}
+
+async function getLrclibByMetadata(track) {
+  try {
+    const params = new URLSearchParams();
+    params.set('track_name', track.title);
+    params.set('artist_name', track.artist);
+    if (track.durationMs > 0) {
+      params.set('duration', String(Math.round(track.durationMs / 1000)));
+    }
+    const response = await fetch(`${LRCLIB_BASE}/get?${params.toString()}`, {
+      headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' }
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    // LRCLIB returns 404 body or empty — check for valid id
+    return data && data.id ? data : null;
+  } catch {
+    return null;
+  }
 }
 
 function buildLyricQueries(track, hints) {
@@ -303,8 +352,10 @@ function scoreLyricResult(item, targetTitle, targetArtist, targetDurationMs) {
   const durationMs = secondsToMs(item.duration);
   if (targetDurationMs && durationMs) {
     const diff = Math.abs(targetDurationMs - durationMs);
-    if (diff < 2500) score += 14;
-    else if (diff < 8000) score += 7;
+    if (diff < 1500)       score += 20; // near-exact match — almost certainly the right version
+    else if (diff < 4000)  score += 12;
+    else if (diff < 8000)  score += 5;
+    else                   score -= 5;  // wrong duration = likely wrong version, penalize
   }
 
   return score;
