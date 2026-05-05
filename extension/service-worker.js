@@ -322,6 +322,30 @@ async function findLyrics(track, hints) {
     }
   }
 
+  // PRIORITY 4: EXTERNAL FALLBACK (lyrics.ovh)
+  // If LRCLIB completely fails or doesn't have the song, try a secondary free API
+  if (track.title && track.artist) {
+    try {
+      const fallbackUrl = `https://api.lyrics.ovh/v1/${encodeURIComponent(track.artist)}/${encodeURIComponent(track.title)}`;
+      const response = await fetch(fallbackUrl);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.lyrics) {
+          return {
+            lyrics: {
+              synced: '',
+              plain: cleanPlainLyrics(data.lyrics),
+              provider: 'lyrics.ovh'
+            },
+            match: { trackName: track.title, artistName: track.artist }
+          };
+        }
+      }
+    } catch (e) {
+      // Ignore fallback errors
+    }
+  }
+
   return null;
 }
 
@@ -420,8 +444,9 @@ function chooseBestLyricResult(results, track, hints) {
     }))
     .sort((a, b) => b.score - a.score);
 
-  // Only return if score is positive (avoid returning garbage)
-  return scored[0].score > 0 ? scored[0].item : null;
+  // Only return if score is high enough (avoids picking completely wrong songs)
+  // If no good match is found, it will fall back to the lyrics.ovh API
+  return scored[0].score >= 35 ? scored[0].item : null;
 }
 
 function scoreLyricResult(item, targetTitle, targetArtist, targetAlbum, targetDurationMs) {
@@ -439,6 +464,7 @@ function scoreLyricResult(item, targetTitle, targetArtist, targetAlbum, targetDu
     }
   }
   if (item.plainLyrics) score += 8;
+  if (item.instrumental) score -= 100; // We want lyrics, so penalize instrumentals
 
   // Title matching
   if (targetTitle && title) {
@@ -454,8 +480,8 @@ function scoreLyricResult(item, targetTitle, targetArtist, targetAlbum, targetDu
   if (targetArtist && artist) {
     if (artist === targetArtist) score += 25;
     else if (artist.includes(targetArtist) || targetArtist.includes(artist)) score += 18;
-    // Penalize wrong artist (e.g., "R&BHype" reposting someone else's song)
-    if (!artist.includes(targetArtist) && !targetArtist.includes(artist)) score -= 10;
+    // Penalize wrong artist HEAVILY (e.g., covers or completely different songs)
+    if (!artist.includes(targetArtist) && !targetArtist.includes(artist)) score -= 40;
   }
 
   // Album matching — strong signal when available
@@ -473,7 +499,7 @@ function scoreLyricResult(item, targetTitle, targetArtist, targetAlbum, targetDu
     if (diff < 1500)       score += 22; // near-exact
     else if (diff < 3000)  score += 14;
     else if (diff < 6000)  score += 5;
-    else                   score -= 8;  // very wrong duration
+    else                   score -= 30; // very wrong duration, sync WILL be off
   }
 
   return score;

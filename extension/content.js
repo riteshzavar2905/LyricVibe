@@ -502,6 +502,21 @@
     state.trackTitle = title;
     state.lyricSource = synced.length ? 'synced' : 'plain fallback';
     state.syncOffsetMs = computeAdaptiveSyncOffset(prepared);
+
+    // YOUTUBE MUSIC VIDEO SYNC COMPENSATOR
+    // Auto-compensate for cinematic music video intros on YouTube
+    if (location.hostname.includes('youtube.com') && payload.match && payload.match.duration && payload.hints && payload.hints.duration) {
+      const actualMs = payload.hints.duration * 1000;
+      const expectedMs = payload.match.duration * 1000;
+      const diffMs = actualMs - expectedMs;
+      
+      // If the YouTube video is 4 to 60 seconds LONGER than the official track duration,
+      // it's highly likely a music video intro. Shift the lyrics forward by that exact amount.
+      if (diffMs > 4000 && diffMs < 60000 && synced.length) {
+        state.syncOffsetMs += diffMs;
+      }
+    }
+
     state.baseOffsetMs = state.syncOffsetMs;
     state.timingErrors = [];
     state.autoCalibrated = false;
