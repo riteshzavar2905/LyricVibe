@@ -192,9 +192,11 @@
   font-family: "Space Grotesk", "Inter", Arial, sans-serif;
   /* ── ANTI-TILT: Complete isolation from host page CSS ── */
   isolation: isolate;
+  contain: layout style;
   perspective: none !important;
   transform: none !important;
   transform-origin: center center !important;
+  will-change: opacity;
 }
 
 /* ── Force all transforms to be FLAT / no rotation / no tilt ── */
@@ -218,6 +220,30 @@
 
 #lvx-root.lvx-active .lvx-stage {
   opacity: 1;
+}
+
+/* ── Prominent "Not Available" message ── */
+.lvx-not-available {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 2rem;
+  font-family: var(--lvx-font-main, Impact, "Arial Black", sans-serif);
+  font-size: clamp(2rem, 5vw, 4.5rem);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.35);
+  line-height: 1.2;
+  animation: lvx-not-avail-in 600ms ease-out both;
+}
+
+@keyframes lvx-not-avail-in {
+  from { opacity: 0; transform: scale(0.85); filter: blur(8px); }
+  to   { opacity: 1; transform: scale(1);    filter: blur(0); }
 }
 
 .lvx-stage::before,

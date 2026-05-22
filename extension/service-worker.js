@@ -115,33 +115,34 @@ async function startSession(tab) {
     return;
   }
 
-  // STEP 2: Spotify — metadata only, no tab capture (faster retries)
+  // STEP 2: Spotify — metadata only with progressive retry (SPA needs time to settle)
   if (isSpotify) {
-    // Quick retry — Spotify DOM may not be ready yet
-    await new Promise((r) => setTimeout(r, 100));
-    const retryHints = await getPageHints(tabId);
-    if (retryHints.track || retryHints.pageTitle) {
-      const retryResult = await recognize({ mode: 'metadata', hints: retryHints });
-      if (retryResult && retryResult.ok && hasUsableLyrics(retryResult)) {
-        await handleRecognitionResult(tabId, retryResult);
-        return;
+    const retryDelays = [200, 500, 1000, 2000, 3500];
+    let lastDetectedTrack = '';
+    for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+      await new Promise((r) => setTimeout(r, retryDelays[attempt]));
+
+      // Re-inject in case SPA navigation dropped our content script
+      if (attempt >= 2) {
+        try { await injectOverlay(tabId); } catch (_) {}
       }
-    }
-    // One more retry
-    await new Promise((r) => setTimeout(r, 400));
-    const finalHints = await getPageHints(tabId);
-    if (finalHints.track || finalHints.pageTitle) {
-      const finalResult = await recognize({ mode: 'metadata', hints: finalHints });
-      if (finalResult && finalResult.ok && hasUsableLyrics(finalResult)) {
-        await handleRecognitionResult(tabId, finalResult);
-        return;
+
+      const retryHints = await getPageHints(tabId);
+      if (retryHints.track || retryHints.pageTitle) {
+        lastDetectedTrack = retryHints.track || retryHints.pageTitle || '';
+        sendToTab(tabId, { type: 'LV_STATUS', text: `Searching lyrics for: ${lastDetectedTrack}` });
+        const retryResult = await recognize({ mode: 'metadata', hints: retryHints });
+        if (retryResult && retryResult.ok && hasUsableLyrics(retryResult)) {
+          await handleRecognitionResult(tabId, retryResult);
+          return;
+        }
       }
     }
     sendToTab(tabId, {
       type: 'LV_ERROR',
-      text: metadataResult && metadataResult.message
-        ? metadataResult.message
-        : 'Could not find lyrics for this Spotify track. Make sure a song is playing.'
+      text: lastDetectedTrack
+        ? `Lyrics not available for "${lastDetectedTrack}". This song may not be in any lyrics database.`
+        : 'Could not find lyrics for this Spotify track. Make sure a song is playing and try again.'
     });
     return;
   }
@@ -228,8 +229,10 @@ async function recognize(body) {
 function trackFromHints(hints) {
   if (hints.track && hints.artist) {
     return {
-      title: hints.track,
-      artist: hints.artist,
+      title: cleanTrackTitle(hints.track),
+      artist: cleanArtistName(hints.artist),
+      rawTitle: hints.track,
+      rawArtist: hints.artist,
       album: hints.album || '',
       durationMs: secondsToMs(hints.duration),
       playOffsetMs: secondsToMs(hints.currentTime),
@@ -239,10 +242,12 @@ function trackFromHints(hints) {
 
   if (hints.track) {
     return {
-      title: hints.track,
+      title: cleanTrackTitle(hints.track),
       artist: '',
+      rawTitle: hints.track,
+      rawArtist: '',
       album: hints.album || '',
-      query: hints.track,
+      query: cleanTrackTitle(hints.track),
       durationMs: secondsToMs(hints.duration),
       playOffsetMs: secondsToMs(hints.currentTime),
       source: 'page-metadata-partial'
@@ -266,12 +271,10 @@ function trackFromHints(hints) {
 }
 
 async function findLyrics(track, hints) {
-  // PRIORITY 1: LRCLIB direct metadata lookup — most accurate, uses exact title+artist+duration
+  // PRIORITY 1: LRCLIB direct metadata lookup — most accurate
   if (track.title && track.artist) {
     const direct = await getLrclibByMetadata(track);
     if (direct && (direct.syncedLyrics || direct.plainLyrics)) {
-      // Validate: if direct result has fake/auto-generated synced lyrics,
-      // fall through to search where scoring can find a better version
       const directIsFake = direct.syncedLyrics && isFakeLRC(direct.syncedLyrics);
       if (!directIsFake) {
         return {
@@ -283,7 +286,25 @@ async function findLyrics(track, hints) {
           match: direct
         };
       }
-      // Direct has fake LRC — still keep plain lyrics as fallback, but try search first
+    }
+  }
+
+  // PRIORITY 1b: Try with raw (uncleaned) metadata if cleaned version failed
+  if (track.rawTitle && track.rawArtist && (track.rawTitle !== track.title || track.rawArtist !== track.artist)) {
+    const rawTrack = { title: track.rawTitle, artist: track.rawArtist, album: track.album, durationMs: track.durationMs };
+    const directRaw = await getLrclibByMetadata(rawTrack);
+    if (directRaw && (directRaw.syncedLyrics || directRaw.plainLyrics)) {
+      const isFake = directRaw.syncedLyrics && isFakeLRC(directRaw.syncedLyrics);
+      if (!isFake) {
+        return {
+          lyrics: {
+            synced: directRaw.syncedLyrics || '',
+            plain: cleanPlainLyrics(directRaw.plainLyrics || ''),
+            provider: 'LRCLIB'
+          },
+          match: directRaw
+        };
+      }
     }
   }
 
@@ -322,27 +343,41 @@ async function findLyrics(track, hints) {
     }
   }
 
-  // PRIORITY 4: EXTERNAL FALLBACK (lyrics.ovh)
-  // If LRCLIB completely fails or doesn't have the song, try a secondary free API
-  if (track.title && track.artist) {
-    try {
-      const fallbackUrl = `https://api.lyrics.ovh/v1/${encodeURIComponent(track.artist)}/${encodeURIComponent(track.title)}`;
-      const response = await fetch(fallbackUrl);
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.lyrics) {
-          return {
-            lyrics: {
-              synced: '',
-              plain: cleanPlainLyrics(data.lyrics),
-              provider: 'lyrics.ovh'
-            },
-            match: { trackName: track.title, artistName: track.artist }
-          };
+  // PRIORITY 4: lyrics.ovh fallback — try cleaned, raw, and first-artist
+  const artistsToTry = [
+    track.artist,
+    track.rawArtist,
+    (track.artist || '').split(/[,&]/)[0].trim()
+  ].filter((a, i, arr) => a && arr.indexOf(a) === i);
+  const titlesToTry = [
+    track.title,
+    track.rawTitle
+  ].filter((t, i, arr) => t && arr.indexOf(t) === i);
+
+  for (const artist of artistsToTry) {
+    for (const title of titlesToTry) {
+      try {
+        const fallbackUrl = `https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const response = await fetch(fallbackUrl, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (response.ok) {
+          const data = await response.json();
+          if (data && data.lyrics && data.lyrics.trim().length > 30) {
+            return {
+              lyrics: {
+                synced: '',
+                plain: cleanPlainLyrics(data.lyrics),
+                provider: 'lyrics.ovh'
+              },
+              match: { trackName: title, artistName: artist }
+            };
+          }
         }
+      } catch (e) {
+        // Ignore fallback errors
       }
-    } catch (e) {
-      // Ignore fallback errors
     }
   }
 
@@ -361,26 +396,56 @@ async function getLrclibByMetadata(track) {
     const response = await fetch(`${LRCLIB_BASE}/get?${params.toString()}`, {
       headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' }
     });
-    if (!response.ok) {
-      // If direct lookup with album fails, retry without album
-      if (track.album) {
-        const fallbackParams = new URLSearchParams();
-        fallbackParams.set('track_name', track.title);
-        fallbackParams.set('artist_name', track.artist);
-        if (track.durationMs > 0) {
-          fallbackParams.set('duration', String(Math.round(track.durationMs / 1000)));
-        }
-        const fb = await fetch(`${LRCLIB_BASE}/get?${fallbackParams.toString()}`, {
-          headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' }
-        });
-        if (!fb.ok) return null;
-        const fbData = await fb.json();
-        return fbData && fbData.id ? fbData : null;
-      }
-      return null;
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.id) return data;
     }
-    const data = await response.json();
-    return data && data.id ? data : null;
+
+    // Retry without album
+    if (track.album) {
+      const p2 = new URLSearchParams();
+      p2.set('track_name', track.title);
+      p2.set('artist_name', track.artist);
+      if (track.durationMs > 0) p2.set('duration', String(Math.round(track.durationMs / 1000)));
+      const r2 = await fetch(`${LRCLIB_BASE}/get?${p2.toString()}`, {
+        headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' }
+      });
+      if (r2.ok) {
+        const d2 = await r2.json();
+        if (d2 && d2.id) return d2;
+      }
+    }
+
+    // Retry without duration (Spotify duration may not match LRCLIB)
+    if (track.durationMs > 0) {
+      const p3 = new URLSearchParams();
+      p3.set('track_name', track.title);
+      p3.set('artist_name', track.artist);
+      const r3 = await fetch(`${LRCLIB_BASE}/get?${p3.toString()}`, {
+        headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' }
+      });
+      if (r3.ok) {
+        const d3 = await r3.json();
+        if (d3 && d3.id) return d3;
+      }
+    }
+
+    // Retry with just the first artist (Spotify: "Artist1, Artist2" → "Artist1")
+    const firstArtist = (track.artist || '').split(/[,&]|\bfeat\.?\b|\bft\.?\b/i)[0].trim();
+    if (firstArtist && firstArtist !== track.artist) {
+      const p4 = new URLSearchParams();
+      p4.set('track_name', track.title);
+      p4.set('artist_name', firstArtist);
+      const r4 = await fetch(`${LRCLIB_BASE}/get?${p4.toString()}`, {
+        headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' }
+      });
+      if (r4.ok) {
+        const d4 = await r4.json();
+        if (d4 && d4.id) return d4;
+      }
+    }
+
+    return null;
   } catch {
     return null;
   }
@@ -394,7 +459,11 @@ function buildLyricQueries(track, hints) {
   const rawQuery   = track.query || '';
   const pageTitle  = cleanPageTitle(hints.pageTitle || '');
 
-  [titleArtist, artistTitle, titleOnly, rawQuery, pageTitle].forEach((q) => {
+  // Also try with just the first artist (for multi-artist entries)
+  const firstArtist = (track.artist || '').split(/[,&]|\bfeat\.?\b|\bft\.?\b/i)[0].trim();
+  const firstArtistTitle = firstArtist ? `${firstArtist} ${track.title}` : '';
+
+  [titleArtist, artistTitle, firstArtistTitle, titleOnly, rawQuery, pageTitle].forEach((q) => {
     const cleaned = cleanupSearchQuery(q);
     if (cleaned && !queries.includes(cleaned)) queries.push(cleaned);
   });
@@ -444,9 +513,9 @@ function chooseBestLyricResult(results, track, hints) {
     }))
     .sort((a, b) => b.score - a.score);
 
-  // Only return if score is high enough (avoids picking completely wrong songs)
-  // If no good match is found, it will fall back to the lyrics.ovh API
-  return scored[0].score >= 35 ? scored[0].item : null;
+  // Lower threshold — 15 is enough to avoid completely wrong songs
+  // while still allowing matches when artist name differs slightly
+  return scored[0].score >= 15 ? scored[0].item : null;
 }
 
 function scoreLyricResult(item, targetTitle, targetArtist, targetAlbum, targetDurationMs) {
@@ -480,8 +549,17 @@ function scoreLyricResult(item, targetTitle, targetArtist, targetAlbum, targetDu
   if (targetArtist && artist) {
     if (artist === targetArtist) score += 25;
     else if (artist.includes(targetArtist) || targetArtist.includes(artist)) score += 18;
-    // Penalize wrong artist HEAVILY (e.g., covers or completely different songs)
-    if (!artist.includes(targetArtist) && !targetArtist.includes(artist)) score -= 40;
+    else {
+      // Word-level matching: Spotify "Artist1, Artist2" vs LRCLIB "Artist1"
+      const targetWords = targetArtist.split(/\s+/);
+      const resultWords = artist.split(/\s+/);
+      const overlap = targetWords.filter(w => w.length > 2 && resultWords.some(rw => rw.includes(w) || w.includes(rw)));
+      if (overlap.length > 0) {
+        score += 12; // partial artist match
+      } else {
+        score -= 15; // wrong artist, but don't over-penalize
+      }
+    }
   }
 
   // Album matching — strong signal when available
@@ -597,6 +675,27 @@ function cleanupSearchQuery(query) {
     .trim();
 }
 
+/* ── Clean Spotify metadata before LRCLIB lookup ── */
+function cleanTrackTitle(title) {
+  return String(title || '')
+    // Remove parenthetical extras: (feat. X), (Remix), (Deluxe), (Explicit), etc.
+    .replace(/\s*\((?:feat\.?|ft\.?|with|prod\.?)[^)]*\)/gi, '')
+    .replace(/\s*\[(?:feat\.?|ft\.?|with|prod\.?)[^]]*\]/gi, '')
+    // Remove remaster/reissue/deluxe/explicit tags
+    .replace(/\s*[-–]\s*(?:remaster(?:ed)?|reissue|deluxe|explicit|clean|radio edit|single version|album version).*$/gi, '')
+    .replace(/\s*\((?:remaster(?:ed)?|reissue|deluxe|explicit|clean|radio edit|single|album)\s*(?:version|edition|mix)?\s*(?:\d{4})?\)/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cleanArtistName(artist) {
+  return String(artist || '')
+    .replace(/\s*(?:feat\.?|ft\.?|with)[,&]\s+.*/i, '')
+    .replace(/[,&]\s+.*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function cleanPlainLyrics(raw) {
   return String(raw || '')
     .split(/\r?\n/)
@@ -653,8 +752,9 @@ async function injectOverlay(tabId) {
 
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-  } catch (error) {
-    throw new Error(`Could not inject LyricVibe overlay: ${error.message}`);
+    return true;
+  } catch {
+    return false;
   }
 }
 

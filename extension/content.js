@@ -56,6 +56,9 @@
     spotifyPollInterval: 0,
     spotifyCurrentTimeMs: 0,
     spotifyLastPollWall: 0,
+    spotifyPauseDetected: false,
+    spotifyNullCount: 0,       // count of consecutive null time reads
+    spotifyLastGoodWall: 0,    // last wall time when we got a non-null read
     isSpotify: false
   };
 
@@ -84,7 +87,7 @@
   stopButton.textContent = '✕';
   stopButton.title = 'Stop LyricVibe (Esc)';
   stopButton.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {});
+    try { chrome.runtime?.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {}); } catch (_) {}
     teardown();
   });
 
@@ -138,6 +141,7 @@
   /* ══════════════════════════════════════
      MESSAGE LISTENER
      ══════════════════════════════════════ */
+  if (typeof chrome === 'undefined' || !chrome.runtime?.onMessage) return; // extension context invalidated
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || !message.type) return;
 
@@ -151,7 +155,17 @@
     }
 
     if (message.type === 'LV_ERROR') {
-      setHud(message.text || 'Something went wrong.', true, true);
+      teardown();
+      show();
+      // Show big prominent "Not Available" message on the stage
+      const errorMsg = message.text || 'Lyrics not available';
+      stage.innerHTML = '';
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'lvx-not-available';
+      errorDiv.textContent = errorMsg;
+      stage.appendChild(errorDiv);
+      root.classList.add('lvx-active');
+      setHud(errorMsg, true, true);
     }
 
     if (message.type === 'LV_TRACK') {
@@ -198,37 +212,10 @@
         textFrom('h1.title') ||
         title.replace(/ - YouTube$/i, '');
     } else if (host.includes('spotify.com')) {
-      /* ── SPOTIFY ENHANCED SELECTORS (2026) ── */
-      hints.track =
-        textFrom('[data-testid="context-item-info-title"]') ||
-        textFrom('[data-testid="now-playing-widget"] [data-testid="context-item-info-title"]') ||
-        textFrom('[data-testid="context-item-link"] [dir="auto"]') ||
-        textFrom('[data-testid="now-playing-widget"] a[data-testid="context-item-link"]') ||
-        textFrom('.now-playing .track-info__name a') ||
-        textFrom('.player-controls__left .track-info__name') ||
-        textFrom('[data-testid="CoverSlotExpanded__container"] a') ||
-        spotifyTrackFromNowPlaying() ||
-        spotifyTrackFromFooter() ||
-        '';
-      hints.artist =
-        textFrom('[data-testid="context-item-info-subtitles"]') ||
-        textFrom('[data-testid="context-item-info-artist"]') ||
-        textFrom('[data-testid="now-playing-widget"] span a[href*="/artist/"]') ||
-        textFrom('.now-playing .track-info__artists a') ||
-        textFrom('.player-controls__left .track-info__artists a') ||
-        spotifyArtistFromNowPlaying() ||
-        spotifyArtistFromFooter() ||
-        '';
-      // Spotify album from now-playing widget
-      hints.album = spotifyAlbumFromWidget() || '';
-
-      // FALLBACK: If DOM selectors failed, parse from page title
-      // Spotify titles look like "Song Name · Artist Name | Spotify"
-      if (!hints.track && title) {
-        const parsed = parseSpotifyTitle(title);
-        if (parsed.track) hints.track = parsed.track;
-        if (parsed.artist) hints.artist = parsed.artist;
-      }
+      /* ── SPOTIFY RESILIENT SELECTORS (2026) ── */
+      hints.track = spotifyGetTrack(title);
+      hints.artist = spotifyGetArtist(title);
+      hints.album = spotifyGetAlbum();
 
       // Spotify time from DOM (no <audio>/<video> element exposed)
       const spotifyTime = getSpotifyCurrentTimeFromDom();
@@ -249,88 +236,98 @@
     return hints;
   }
 
-  /* ── Spotify-specific DOM scraping helpers ── */
-  function spotifyTrackFromNowPlaying() {
-    // Fallback: grab the first <a> inside the now-playing widget
-    const widget = document.querySelector('[data-testid="now-playing-widget"]');
-    if (!widget) return '';
-    const links = widget.querySelectorAll('a');
-    for (const link of links) {
-      const text = link.textContent.trim();
-      if (text && text.length > 1 && !link.href.includes('/artist/')) return text;
-    }
-    return '';
+  /* ══════════════════════════════════════
+     SPOTIFY DOM HELPERS — multi-strategy cascade
+     ══════════════════════════════════════ */
+  function spotifyGetPlayerRoot() {
+    return document.querySelector('[data-testid="now-playing-widget"]') ||
+           document.querySelector('[data-testid="now-playing-bar"]') ||
+           document.querySelector('footer') ||
+           null;
   }
 
-  function spotifyTrackFromFooter() {
-    // Fallback: try the footer/bottom bar area
-    const footer = document.querySelector('footer') || document.querySelector('[data-testid="now-playing-bar"]');
-    if (!footer) return '';
-    const links = footer.querySelectorAll('a');
-    for (const link of links) {
-      const text = link.textContent.trim();
-      if (text && text.length > 1 && !link.href.includes('/artist/') && link.href.includes('/track/')) return text;
-    }
-    // Try any link with album/track path
-    for (const link of links) {
-      const text = link.textContent.trim();
-      if (text && text.length > 1 && !link.href.includes('/artist/')) return text;
-    }
-    return '';
-  }
+  function spotifyGetTrack(pageTitle) {
+    // Strategy 1: data-testid selectors
+    let t = textFrom('[data-testid="context-item-info-title"]') ||
+            textFrom('[data-testid="now-playing-widget"] [data-testid="context-item-info-title"]') ||
+            textFrom('[data-testid="context-item-link"] [dir="auto"]');
+    if (t) return t;
 
-  function spotifyArtistFromNowPlaying() {
-    const widget = document.querySelector('[data-testid="now-playing-widget"]');
-    if (!widget) return '';
-    const links = widget.querySelectorAll('a');
-    for (const link of links) {
-      if (link.href && link.href.includes('/artist/')) return link.textContent.trim();
-    }
-    return '';
-  }
-
-  function spotifyArtistFromFooter() {
-    const footer = document.querySelector('footer') || document.querySelector('[data-testid="now-playing-bar"]');
-    if (!footer) return '';
-    const links = footer.querySelectorAll('a');
-    for (const link of links) {
-      if (link.href && link.href.includes('/artist/')) return link.textContent.trim();
-    }
-    return '';
-  }
-
-  function spotifyAlbumFromWidget() {
-    // Try to get album name from the now-playing widget
-    const widget = document.querySelector('[data-testid="now-playing-widget"]');
-    if (widget) {
-      const links = widget.querySelectorAll('a');
-      for (const link of links) {
-        if (link.href && link.href.includes('/album/')) return link.textContent.trim();
+    // Strategy 2: Links in now-playing widget (non-artist links)
+    const root = spotifyGetPlayerRoot();
+    if (root) {
+      // First try links to /track/ paths
+      for (const link of root.querySelectorAll('a[href*="/track/"]')) {
+        const txt = link.textContent.trim();
+        if (txt && txt.length > 1) return txt;
+      }
+      // Then try first non-artist, non-album link
+      for (const link of root.querySelectorAll('a')) {
+        const txt = link.textContent.trim();
+        const href = link.href || '';
+        if (txt && txt.length > 1 && !href.includes('/artist/') && !href.includes('/album/') && !href.includes('/playlist/')) return txt;
+      }
+      // Try any [dir="auto"] text node (Spotify uses this for song titles)
+      const dirAuto = root.querySelector('[dir="auto"]');
+      if (dirAuto) {
+        const txt = dirAuto.textContent.trim();
+        if (txt && txt.length > 1) return txt;
       }
     }
-    // Fallback: footer area
-    const footer = document.querySelector('footer') || document.querySelector('[data-testid="now-playing-bar"]');
-    if (footer) {
-      const links = footer.querySelectorAll('a');
-      for (const link of links) {
-        if (link.href && link.href.includes('/album/')) return link.textContent.trim();
+
+    // Strategy 3: Page title parsing
+    if (pageTitle) {
+      const parsed = parseSpotifyTitle(pageTitle);
+      if (parsed.track) return parsed.track;
+    }
+    return '';
+  }
+
+  function spotifyGetArtist(pageTitle) {
+    // Strategy 1: data-testid selectors
+    let a = textFrom('[data-testid="context-item-info-subtitles"]') ||
+            textFrom('[data-testid="context-item-info-artist"]');
+    if (a) return a;
+
+    // Strategy 2: Links to /artist/ in player root
+    const root = spotifyGetPlayerRoot();
+    if (root) {
+      const artistLinks = root.querySelectorAll('a[href*="/artist/"]');
+      const names = [];
+      for (const link of artistLinks) {
+        const txt = link.textContent.trim();
+        if (txt && txt.length > 1) names.push(txt);
       }
+      if (names.length) return names.join(', ');
+    }
+
+    // Strategy 3: Page title parsing
+    if (pageTitle) {
+      const parsed = parseSpotifyTitle(pageTitle);
+      if (parsed.artist) return parsed.artist;
+    }
+    return '';
+  }
+
+  function spotifyGetAlbum() {
+    const root = spotifyGetPlayerRoot();
+    if (!root) return '';
+    for (const link of root.querySelectorAll('a[href*="/album/"]')) {
+      const txt = link.textContent.trim();
+      if (txt && txt.length > 1) return txt;
     }
     return '';
   }
 
   function parseSpotifyTitle(title) {
-    // Spotify page titles: "Song Name · Artist Name | Spotify" or "Song - Artist | Spotify"
     let cleaned = (title || '')
       .replace(/\s*[|·•]\s*Spotify\s*$/i, '')
       .replace(/\s*-\s*Spotify\s*$/i, '')
       .trim();
-    // Try "Song · Artist" format
     const dotSplit = cleaned.split(' · ');
     if (dotSplit.length >= 2) {
       return { track: dotSplit[0].trim(), artist: dotSplit.slice(1).join(' ').trim() };
     }
-    // Try "Artist - Song" format
     const dashSplit = cleaned.split(' - ');
     if (dashSplit.length >= 2) {
       return { track: dashSplit[1].trim(), artist: dashSplit[0].trim() };
@@ -338,17 +335,18 @@
     return { track: cleaned, artist: '' };
   }
 
+  /* ══════════════════════════════════════
+     SPOTIFY TIME READING — multi-source with progress bar fill
+     ══════════════════════════════════════ */
   function getSpotifyCurrentTimeFromDom() {
-    // Spotify shows current time as text like "1:23"
-    const el = document.querySelector('[data-testid="playback-position"]') ||
-               document.querySelector('.playback-bar__progress-time-elapsed') ||
-               document.querySelector('.playback-bar [data-testid="playback-position"]') ||
-               document.querySelector('[data-testid="progress-bar"] [data-testid="playback-position"]');
+    // Source 1: data-testid time text
+    const el = document.querySelector('[data-testid="playback-position"]');
     if (el) {
       const ms = parseTimeString(el.textContent);
       if (ms !== null) return ms;
     }
-    // Alternative: look for aria-valuenow on the progress bar
+
+    // Source 2: input[type="range"] on progress bar
     const bar = document.querySelector('[data-testid="playback-progressbar"] input[type="range"]') ||
                 document.querySelector('.playback-bar input[type="range"]') ||
                 document.querySelector('[data-testid="progress-bar"] input[type="range"]');
@@ -356,13 +354,42 @@
       const val = parseFloat(bar.value);
       const max = parseFloat(bar.max);
       if (Number.isFinite(val) && Number.isFinite(max) && max > 0) {
-        // Spotify range input: value and max are both in milliseconds
-        // Sanity check: if max > 600000 (10 min) it's likely in ms, else seconds
         return max > 600000 ? val : val * 1000;
       }
     }
-    // Last resort: check for any time-display element in the footer
-    const footerTimes = document.querySelectorAll('footer [class*="playback"] span, [data-testid="now-playing-bar"] span');
+
+    // Source 3: progress bar fill width ratio × duration
+    const dur = getSpotifyDurationFromDom();
+    if (dur !== null && dur > 0) {
+      // Try the progress bar fill div
+      const progressTrack = document.querySelector('[data-testid="playback-progressbar"]') ||
+                             document.querySelector('[data-testid="progress-bar"]') ||
+                             document.querySelector('.playback-bar');
+      if (progressTrack) {
+        const fill = progressTrack.querySelector('[style*="width"]') ||
+                     progressTrack.querySelector('[data-testid="progress-bar-fill"]') ||
+                     progressTrack.querySelector('div > div');
+        if (fill) {
+          const style = fill.getAttribute('style') || '';
+          const widthMatch = style.match(/width:\s*([\d.]+)%/) ||
+                             style.match(/transform:\s*translateX\(([-\d.]+)%\)/);
+          if (widthMatch) {
+            const pct = Math.abs(parseFloat(widthMatch[1])) / 100;
+            if (pct >= 0 && pct <= 1) return Math.round(dur * pct);
+          }
+          // Try computed width ratio
+          const trackRect = progressTrack.getBoundingClientRect();
+          const fillRect = fill.getBoundingClientRect();
+          if (trackRect.width > 0 && fillRect.width > 0) {
+            const ratio = fillRect.width / trackRect.width;
+            if (ratio >= 0 && ratio <= 1) return Math.round(dur * ratio);
+          }
+        }
+      }
+    }
+
+    // Source 4: scan footer spans for time-like text
+    const footerTimes = document.querySelectorAll('footer span, [data-testid="now-playing-bar"] span');
     for (const span of footerTimes) {
       const ms = parseTimeString(span.textContent);
       if (ms !== null) return ms;
@@ -371,19 +398,46 @@
   }
 
   function getSpotifyDurationFromDom() {
-    const el = document.querySelector('[data-testid="playback-duration"]') ||
-               document.querySelector('.playback-bar__progress-time-total') ||
-               document.querySelector('.playback-bar [data-testid="playback-duration"]');
-    if (el) {
-      return parseTimeString(el.textContent);
+    const el = document.querySelector('[data-testid="playback-duration"]');
+    if (el) return parseTimeString(el.textContent);
+    // Fallback: input max on range
+    const bar = document.querySelector('[data-testid="playback-progressbar"] input[type="range"]') ||
+                document.querySelector('.playback-bar input[type="range"]');
+    if (bar) {
+      const max = parseFloat(bar.max);
+      if (Number.isFinite(max) && max > 0) return max > 600000 ? max : max * 1000;
+    }
+    // Fallback: second time string in footer
+    const spans = document.querySelectorAll('footer span, [data-testid="now-playing-bar"] span');
+    let found = 0;
+    for (const span of spans) {
+      const ms = parseTimeString(span.textContent);
+      if (ms !== null) { found++; if (found === 2) return ms; }
     }
     return null;
+  }
+
+  /* ── Spotify Pause Detection ── */
+  function isSpotifyPaused() {
+    // ONLY check the main playback play/pause button — NOT any other "Play" button on the page
+    // (Spotify has many buttons like "Shuffle Play", playlist "Play" etc.)
+    const btn = document.querySelector('[data-testid="control-button-playpause"]');
+    if (btn) {
+      const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+      if (label === 'play' || label === 'play song') return true;
+      if (label === 'pause' || label === 'pause song') return false;
+      // Partial match but only exact play/pause context
+      if (/^play$/i.test(label.trim())) return true;
+      if (/^pause$/i.test(label.trim())) return false;
+    }
+    // Fallback: only trust stale-time detection (set by polling)
+    return state.spotifyPauseDetected || false;
   }
 
   function parseTimeString(str) {
     if (!str) return null;
     const clean = str.trim();
-    // Formats: "1:23", "01:23", "1:02:03"
+    if (!/^\d+:\d{2}(:\d{2})?$/.test(clean)) return null;
     const parts = clean.split(':').map(Number);
     if (parts.some(isNaN)) return null;
     if (parts.length === 2) return (parts[0] * 60 + parts[1]) * 1000;
@@ -392,8 +446,10 @@
   }
 
   function textFrom(selector) {
-    const node = document.querySelector(selector);
-    return node ? node.textContent.trim().replace(/\s+/g, ' ') : '';
+    try {
+      const node = document.querySelector(selector);
+      return node ? node.textContent.trim().replace(/\s+/g, ' ') : '';
+    } catch (_) { return ''; }
   }
 
   function getMedia() {
@@ -404,23 +460,55 @@
   }
 
   /* ══════════════════════════════════════
-     SPOTIFY TIME POLLING
-     (Spotify doesn't expose <audio>, so we poll the DOM progress bar)
+     SPOTIFY TIME POLLING — resilient, pause-aware
      ══════════════════════════════════════ */
   function startSpotifyPolling() {
     stopSpotifyPolling();
     if (!state.isSpotify) return;
 
+    let staleCount = 0;
+    state.spotifyNullCount = 0;
+
     state.spotifyPollInterval = setInterval(() => {
       const ms = getSpotifyCurrentTimeFromDom();
-      if (ms !== null && ms !== state.spotifyCurrentTimeMs) {
-        // Only update anchor when the time VALUE actually changes
-        // (Spotify text updates ~1x/sec, polling at 30ms just re-reads same value)
-        // This enables proper interpolation between text updates
+
+      // Handle null reads (DOM not ready or element disappeared)
+      if (ms === null) {
+        state.spotifyNullCount++;
+        // After 10 null reads (2s), don't freeze — keep interpolating from last good value
+        // After 50 null reads (10s), mark as stalled
+        if (state.spotifyNullCount > 50 && !state.spotifyPauseDetected) {
+          state.spotifyPauseDetected = true;
+        }
+        return;
+      }
+
+      // Got a valid read
+      state.spotifyNullCount = 0;
+      state.spotifyLastGoodWall = performance.now();
+
+      if (ms !== state.spotifyCurrentTimeMs) {
+        // Time value changed — music is playing, re-anchor interpolation
         state.spotifyCurrentTimeMs = ms;
         state.spotifyLastPollWall = performance.now();
+        state.spotifyPauseDetected = false;
+        staleCount = 0;
+      } else {
+        staleCount++;
+        // Spotify text updates ~1x/sec, polling at 200ms = ~5 polls per text change
+        // If stale for 30+ polls (~6 seconds), THEN check the pause button
+        if (staleCount > 30) {
+          const btnPaused = isSpotifyPaused();
+          if (btnPaused) {
+            state.spotifyPauseDetected = true;
+            state.spotifyLastPollWall = performance.now();
+          } else {
+            state.spotifyPauseDetected = false;
+          }
+          staleCount = 20; // Reset slightly so we don't spam the button check
+        }
       }
-    }, 30);
+    }, 200);
   }
 
   function stopSpotifyPolling() {
@@ -431,50 +519,49 @@
   }
 
   /* ══════════════════════════════════════
-     SPOTIFY TRACK CHANGE OBSERVER
-     Watches for track title changes and auto-refreshes lyrics
+     SPOTIFY TRACK CHANGE OBSERVER — debounced, on document.body
      ══════════════════════════════════════ */
   function setupSpotifyTrackObserver() {
-    let lastTrackText = '';
+    let lastTrackKey = '';
+    let debounceTimer = 0;
+
     const checkTrackChange = () => {
-      const hints = getPageHints();
-      const currentTrack = hints.track || '';
-      if (currentTrack && currentTrack !== lastTrackText && state.active) {
-        lastTrackText = currentTrack;
-        // Notify service worker to re-detect lyrics for the new track
+      const track = spotifyGetTrack(document.title);
+      const artist = spotifyGetArtist(document.title);
+      const key = `${track}|||${artist}`;
+
+      if (track && key !== lastTrackKey && state.active) {
+        lastTrackKey = key;
+        // Stop current, wait for DOM to settle, then restart
         try {
-          chrome.runtime.sendMessage({
-            type: 'LV_CONTENT_STOP'
-          }).catch(() => {});
-          // Small delay then request fresh detection
+          chrome.runtime?.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {});
           setTimeout(() => {
-            chrome.runtime.sendMessage({
-              type: 'LV_SPOTIFY_TRACK_CHANGED'
-            }).catch(() => {});
-          }, 300);
+            try { chrome.runtime?.sendMessage({ type: 'LV_SPOTIFY_TRACK_CHANGED' }).catch(() => {}); } catch (_) {}
+          }, 500);
         } catch (_) {}
-      } else if (currentTrack && !lastTrackText) {
-        lastTrackText = currentTrack;
+      } else if (track && !lastTrackKey) {
+        lastTrackKey = key;
       }
     };
 
-    // Observe changes in the now-playing widget area
-    const targetNode = document.querySelector('[data-testid="now-playing-widget"]') ||
-                       document.querySelector('footer') ||
-                       document.body;
-    if (targetNode) {
-      const observer = new MutationObserver(() => {
-        checkTrackChange();
-      });
-      observer.observe(targetNode, {
-        childList: true,
-        subtree: true,
-        characterData: true
-      });
+    const debouncedCheck = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(checkTrackChange, 300);
+    };
+
+    // Always observe document.body — it always exists, unlike now-playing-widget
+    const observer = new MutationObserver(debouncedCheck);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    // Also watch page title changes (Spotify updates title on track change)
+    const titleObserver = new MutationObserver(debouncedCheck);
+    const titleEl = document.querySelector('title');
+    if (titleEl) {
+      titleObserver.observe(titleEl, { childList: true, characterData: true });
     }
 
-    // Also poll periodically as a fallback
-    setInterval(checkTrackChange, 3000);
+    // Fallback polling
+    setInterval(checkTrackChange, 4000);
   }
 
   /* ══════════════════════════════════════
@@ -517,9 +604,17 @@
       }
     }
 
+    // SPOTIFY SYNC COMPENSATION
+    // Start with a moderate offset. The auto-calibration system (below) will
+    // fine-tune this per-song after the first few lyric lines are rendered.
+    if (state.isSpotify && synced.length) {
+      state.syncOffsetMs -= 250;
+    }
+
     state.baseOffsetMs = state.syncOffsetMs;
     state.timingErrors = [];
     state.autoCalibrated = false;
+    state.spotifyAutoCalibSamples = [];
     state.mediaDriftSamples = [];
     state.playbackRate = 1;
 
@@ -551,6 +646,22 @@
     root.classList.add('lvx-active');
     setHud(`${title} · ${state.lyricSource} · offset ${formatOffset(state.syncOffsetMs)}`);
     startLoop();
+
+    // SAFETY NET: if no lyric line renders within 12 seconds, show error
+    // This catches cases where DOM time reading fails silently (blank screen bug)
+    if (state.isSpotify) {
+      setTimeout(() => {
+        if (state.active && state.currentIndex < 0) {
+          // No line rendered yet — time source is probably broken
+          stage.innerHTML = '';
+          const errorDiv = document.createElement('div');
+          errorDiv.className = 'lvx-not-available';
+          errorDiv.textContent = 'Lyrics found but sync failed. Try skipping forward/back.';
+          stage.appendChild(errorDiv);
+          setHud('Sync failed — try restarting the song', true, true);
+        }
+      }, 12000);
+    }
   }
 
   /* ══════════════════════════════════════
@@ -808,6 +919,26 @@
       const nextIndex = findActiveIndex(lyricClockMs);
 
       if (nextIndex !== state.currentIndex) {
+        // SPOTIFY AUTO-CALIBRATION: observe timing errors on the first 12 line transitions
+        // and adjust offset so lyrics land closer to the beat
+        if (state.isSpotify && nextIndex >= 0 && nextIndex < state.lines.length && !state.autoCalibrated) {
+          const expectedMs = state.lines[nextIndex].time;
+          const errorMs = lyricClockMs - expectedMs; // positive = we're late
+          if (Math.abs(errorMs) < 3000) { // ignore wild outliers
+            if (!state.spotifyAutoCalibSamples) state.spotifyAutoCalibSamples = [];
+            state.spotifyAutoCalibSamples.push(errorMs);
+            // After 8 samples, compute median error and adjust offset
+            if (state.spotifyAutoCalibSamples.length >= 8) {
+              const sorted = [...state.spotifyAutoCalibSamples].sort((a, b) => a - b);
+              const median = sorted[Math.floor(sorted.length / 2)];
+              // Only adjust if median error > 100ms (meaningful)
+              if (Math.abs(median) > 100) {
+                state.syncOffsetMs += Math.round(median * 0.6); // partial correction
+              }
+              state.autoCalibrated = true;
+            }
+          }
+        }
         renderIndex(nextIndex, lyricClockMs);
       } else if (nextIndex >= 0) {
         const line = state.lines[nextIndex];
@@ -833,21 +964,35 @@
      MEDIA TIME (supports Spotify DOM polling + standard)
      ══════════════════════════════════════ */
   function getMediaTimeMs() {
-    // 1) Standard <video>/<audio> element (YouTube, SoundCloud, etc.)
+    // ─── SPOTIFY: ALWAYS use DOM polling, NEVER trust <video>/<audio> elements ───
+    // Spotify has hidden media elements (Canvas loops, DRM playback via EME)
+    // whose currentTime is WRONG — it loops, freezes, or reports DRM stream time.
+    // This was the root cause of blank screens, 2-line loops, and freeze bugs.
+    if (state.isSpotify) {
+      if (state.spotifyLastPollWall > 0) {
+        if (state.spotifyPauseDetected) {
+          return state.spotifyCurrentTimeMs;
+        }
+        const now = performance.now();
+        const wallElapsed = now - state.spotifyLastPollWall;
+        // Safety cap: if no fresh poll in 5 seconds, don't keep advancing
+        if (wallElapsed > 5000) {
+          return state.spotifyCurrentTimeMs + 5000;
+        }
+        return state.spotifyCurrentTimeMs + wallElapsed;
+      }
+      // Spotify polling hasn't started yet — use fallback
+      return state.fallbackMediaStartMs + (performance.now() - state.fallbackStartMs);
+    }
+
+    // ─── NON-SPOTIFY: use standard <video>/<audio> element ───
     const media = getMedia();
     if (media && Number.isFinite(media.currentTime) && media.duration > 0) {
       state.playbackRate = media.playbackRate || 1;
       return media.currentTime * 1000;
     }
 
-    // 2) Spotify: interpolate from last DOM poll
-    if (state.isSpotify && state.spotifyLastPollWall > 0) {
-      const wallElapsed = performance.now() - state.spotifyLastPollWall;
-      // Interpolate: assume 1x playback between polls
-      return state.spotifyCurrentTimeMs + wallElapsed;
-    }
-
-    // 3) Pure fallback (no media element found)
+    // Pure fallback (no media element found)
     return state.fallbackMediaStartMs + (performance.now() - state.fallbackStartMs);
   }
 
@@ -1133,7 +1278,7 @@
     }
 
     if (event.key === 'Escape') {
-      chrome.runtime.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {});
+      try { chrome.runtime?.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {}); } catch (_) {}
       teardown();
     }
   }
@@ -1189,6 +1334,10 @@
     state.currentMoment = null;
     state.timingErrors = [];
     state.autoCalibrated = false;
+    state.spotifyPauseDetected = false;
+    state.spotifyNullCount = 0;
+    state.spotifyLastGoodWall = 0;
+    state.spotifyAutoCalibSamples = [];
     root.classList.remove('lvx-active');
     stage.textContent = '';
     root.remove();
