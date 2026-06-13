@@ -1,8 +1,8 @@
 const LRCLIB_BASE = 'https://lrclib.net/api';
-const RECORD_MS = 8000;
 const sessions = new Map();
 
-/* ── Lyrics cache: avoids re-fetching for previously played tracks ── */
+/* ── Lyrics cache: in-memory + chrome.storage.session so it survives
+   service-worker suspension (MV3 workers die after ~30s idle) ── */
 const lyricsCache = new Map();
 const CACHE_MAX = 60;
 
@@ -10,9 +10,19 @@ function cacheKey(track, artist) {
   return `${(artist || '').toLowerCase().trim()}|${(track || '').toLowerCase().trim()}`;
 }
 
-function getCachedLyrics(track, artist) {
+async function getCachedLyrics(track, artist) {
   const key = cacheKey(track, artist);
-  return lyricsCache.has(key) ? lyricsCache.get(key) : null;
+  if (lyricsCache.has(key)) return lyricsCache.get(key);
+  // Fall back to session storage (survives SW restarts within the browser session)
+  try {
+    const stored = await chrome.storage.session.get(`lvxCache:${key}`);
+    const hit = stored[`lvxCache:${key}`];
+    if (hit) {
+      lyricsCache.set(key, hit);
+      return hit;
+    }
+  } catch (_) {}
+  return null;
 }
 
 function setCachedLyrics(track, artist, payload) {
@@ -22,6 +32,9 @@ function setCachedLyrics(track, artist, payload) {
     lyricsCache.delete(oldest);
   }
   lyricsCache.set(key, payload);
+  try {
+    chrome.storage.session.set({ [`lvxCache:${key}`]: payload });
+  } catch (_) {}
 }
 
 /* ══════════════════════════════════════
@@ -49,28 +62,6 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     stopSession(sender.tab.id, 'Stopped');
   }
 
-  if (message.type === 'LV_OFFSCREEN_STATUS') {
-    sendToTab(message.tabId, {
-      type: 'LV_STATUS',
-      text: message.text || 'Listening...'
-    });
-  }
-
-  if (message.type === 'LV_OFFSCREEN_RESULT') {
-    const session = sessions.get(message.tabId);
-    if (session) session.capturing = false;
-    handleRecognitionResult(message.tabId, message.payload);
-  }
-
-  if (message.type === 'LV_OFFSCREEN_ERROR') {
-    const session = sessions.get(message.tabId);
-    if (session) session.capturing = false;
-    sendToTab(message.tabId, {
-      type: 'LV_ERROR',
-      text: message.error || 'Could not detect the song.'
-    });
-  }
-
   if (message.type === 'LV_SPOTIFY_TRACK_CHANGED' && sender.tab && sender.tab.id) {
     startSession(sender.tab);
   }
@@ -78,7 +69,6 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   sessions.delete(tabId);
-  chrome.runtime.sendMessage({ type: 'LV_STOP_CAPTURE', tabId }).catch(() => {});
 });
 
 /* ══════════════════════════════════════
@@ -86,7 +76,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
    ══════════════════════════════════════ */
 async function startSession(tab) {
   const tabId = tab.id;
-  sessions.set(tabId, { active: true, capturing: false });
+  sessions.set(tabId, { active: true });
 
   await injectOverlay(tabId);
   sendToTab(tabId, { type: 'LV_STATUS', text: 'Detecting song...' });
@@ -96,7 +86,7 @@ async function startSession(tab) {
 
   // STEP 0: Check cache first (instant)
   if (hints.track) {
-    const cached = getCachedLyrics(hints.track, hints.artist);
+    const cached = await getCachedLyrics(hints.track, hints.artist);
     if (cached) {
       // Update playOffsetMs from current hints
       if (cached.track && hints.currentTime != null) {
@@ -147,18 +137,33 @@ async function startSession(tab) {
     return;
   }
 
-  // STEP 3: Fall back to audio capture for other sites
-  sendToTab(tabId, {
-    type: 'LV_STATUS',
-    text: 'Listening to tab audio...'
-  });
+  // STEP 3: Generic sites — retry metadata a few times (SPAs may need time to settle)
+  const genericDelays = [400, 1000, 2200];
+  let lastTrack = hints.track || hints.pageTitle || '';
+  for (const delay of genericDelays) {
+    await new Promise((r) => setTimeout(r, delay));
+    const retryHints = await getPageHints(tabId);
+    lastTrack = retryHints.track || retryHints.pageTitle || lastTrack;
+    if (lastTrack) {
+      sendToTab(tabId, { type: 'LV_STATUS', text: `Searching lyrics for: ${lastTrack}` });
+    }
+    const retryResult = await recognize({ mode: 'metadata', hints: retryHints });
+    if (retryResult && retryResult.ok && hasUsableLyrics(retryResult)) {
+      await handleRecognitionResult(tabId, retryResult);
+      return;
+    }
+  }
 
-  await startTabCapture(tab);
+  sendToTab(tabId, {
+    type: 'LV_ERROR',
+    text: lastTrack
+      ? `No lyrics found for "${lastTrack}". This song may not be in the lyrics database yet.`
+      : 'Could not detect a song on this page. Works best on YouTube Music, Spotify, and SoundCloud.'
+  });
 }
 
 async function stopSession(tabId, reason) {
   sessions.delete(tabId);
-  chrome.runtime.sendMessage({ type: 'LV_STOP_CAPTURE', tabId }).catch(() => {});
   sendToTab(tabId, { type: 'LV_STOP', text: reason || 'Stopped' });
 }
 
@@ -179,7 +184,7 @@ async function recognize(body) {
   }
 
   // Check cache before hitting API
-  const cached = getCachedLyrics(detected.title, detected.artist);
+  const cached = await getCachedLyrics(detected.title, detected.artist);
   if (cached) {
     if (cached.track && detected.playOffsetMs != null) {
       cached.track.playOffsetMs = detected.playOffsetMs;
@@ -765,47 +770,6 @@ async function getPageHints(tabId) {
   } catch {
     return {};
   }
-}
-
-/* ══════════════════════════════════════
-   TAB AUDIO CAPTURE
-   ══════════════════════════════════════ */
-async function startTabCapture(tab) {
-  const tabId = tab.id;
-  try {
-    await ensureOffscreenDocument();
-
-    const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
-    const session = sessions.get(tabId);
-    if (session) session.capturing = true;
-
-    chrome.runtime.sendMessage({
-      type: 'LV_START_CAPTURE',
-      tabId,
-      streamId,
-      recordMs: RECORD_MS,
-      hints: await getPageHints(tabId)
-    });
-  } catch (error) {
-    sendToTab(tabId, {
-      type: 'LV_ERROR',
-      text: `Tab audio capture failed: ${error.message}`
-    });
-  }
-}
-
-async function ensureOffscreenDocument() {
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ['OFFSCREEN_DOCUMENT'],
-    documentUrls: [chrome.runtime.getURL('offscreen.html')]
-  });
-  if (contexts.length) return;
-
-  await chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: ['USER_MEDIA'],
-    justification: 'Capture the active tab audio for local song recognition.'
-  });
 }
 
 /* ══════════════════════════════════════

@@ -59,7 +59,13 @@
     spotifyPauseDetected: false,
     spotifyNullCount: 0,       // count of consecutive null time reads
     spotifyLastGoodWall: 0,    // last wall time when we got a non-null read
-    isSpotify: false
+    isSpotify: false,
+    // New: user preferences & track context
+    fontScale: 1,              // user font size multiplier (+/- keys)
+    liteMode: false,           // see-through mode (B key)
+    trackKey: '',              // cache key for per-song offset memory
+    trackDurationMs: 0,        // for the progress bar
+    offsetWasRestored: false   // true if offset loaded from per-song memory
   };
 
   /* ══════════════════════════════════════
@@ -110,7 +116,19 @@
   syncLater.addEventListener('click', () => nudgeSync(SYNC_NUDGE_MS));
 
   hud.append(hudLabel, hudText, syncEarlier, syncLater, themeButton, stopButton);
-  root.append(stage, hud);
+
+  /* Next-line preview (bottom center) */
+  const preview = document.createElement('div');
+  preview.className = 'lvx-preview';
+
+  /* Song progress bar (bottom edge) */
+  const progress = document.createElement('div');
+  progress.className = 'lvx-progress';
+  const progressFill = document.createElement('div');
+  progressFill.className = 'lvx-progress-fill';
+  progress.appendChild(progressFill);
+
+  root.append(stage, preview, progress, hud);
   document.documentElement.appendChild(root);
 
   window.__lyricVibeOverlay = {
@@ -121,11 +139,18 @@
 
   setHud('Ready. Play music, then click LyricVibe.', false, true);
 
-  /* Load saved theme */
+  /* Load saved preferences (theme, font scale, lite mode) */
   try {
-    chrome.storage.local.get('lvxTheme', (result) => {
+    chrome.storage.local.get(['lvxTheme', 'lvxFontScale', 'lvxLiteMode'], (result) => {
       if (result && result.lvxTheme && THEMES.includes(result.lvxTheme)) {
         applyTheme(result.lvxTheme);
+      }
+      if (result && Number.isFinite(result.lvxFontScale)) {
+        state.fontScale = clamp(result.lvxFontScale, 0.6, 1.6);
+      }
+      if (result && result.lvxLiteMode) {
+        state.liteMode = true;
+        root.classList.add('lvx-lite');
       }
     });
   } catch (_) {}
@@ -589,6 +614,12 @@
     state.trackTitle = title;
     state.lyricSource = synced.length ? 'synced' : 'plain fallback';
     state.syncOffsetMs = computeAdaptiveSyncOffset(prepared);
+    state.trackKey = trackStorageKey(track);
+    state.trackDurationMs = Number(track.durationMs || 0) ||
+      (payload.hints && payload.hints.duration ? payload.hints.duration * 1000 : 0);
+    state.offsetWasRestored = false;
+    preview.textContent = '';
+    progressFill.style.width = '0%';
 
     // YOUTUBE MUSIC VIDEO SYNC COMPENSATOR
     // Auto-compensate for cinematic music video intros on YouTube
@@ -646,6 +677,23 @@
     root.classList.add('lvx-active');
     setHud(`${title} · ${state.lyricSource} · offset ${formatOffset(state.syncOffsetMs)}`);
     startLoop();
+
+    /* PER-SONG OFFSET MEMORY: if the user manually nudged sync for this song
+       before, restore their preferred offset (overrides the adaptive guess). */
+    if (state.trackKey) {
+      try {
+        chrome.storage.local.get(`lvxOffset:${state.trackKey}`, (result) => {
+          const saved = result && result[`lvxOffset:${state.trackKey}`];
+          if (Number.isFinite(saved) && state.active && state.trackKey) {
+            state.syncOffsetMs = saved;
+            state.baseOffsetMs = saved;
+            state.autoCalibrated = true; // trust the user's saved offset
+            state.offsetWasRestored = true;
+            setHud(`${title} · saved sync restored (${formatOffset(saved)})`);
+          }
+        });
+      } catch (_) {}
+    }
 
     // SAFETY NET: if no lyric line renders within 12 seconds, show error
     // This catches cases where DOM time reading fails silently (blank screen bug)
@@ -918,10 +966,16 @@
       const lyricClockMs = mediaMs - state.syncOffsetMs;
       const nextIndex = findActiveIndex(lyricClockMs);
 
+      // Update song progress bar
+      if (state.trackDurationMs > 0) {
+        const pct = clamp((mediaMs / state.trackDurationMs) * 100, 0, 100);
+        progressFill.style.width = `${pct.toFixed(2)}%`;
+      }
+
       if (nextIndex !== state.currentIndex) {
         // SPOTIFY AUTO-CALIBRATION: observe timing errors on the first 12 line transitions
         // and adjust offset so lyrics land closer to the beat
-        if (state.isSpotify && nextIndex >= 0 && nextIndex < state.lines.length && !state.autoCalibrated) {
+        if (state.isSpotify && nextIndex >= 0 && nextIndex < state.lines.length && !state.autoCalibrated && !state.offsetWasRestored) {
           const expectedMs = state.lines[nextIndex].time;
           const errorMs = lyricClockMs - expectedMs; // positive = we're late
           if (Math.abs(errorMs) < 3000) { // ignore wild outliers
@@ -1050,8 +1104,10 @@
      RENDERING
      ══════════════════════════════════════ */
   function renderIndex(index, clockMs) {
+    const prevIndex = state.currentIndex; // capture BEFORE overwriting (calibration needs it)
     clearMoment();
     state.currentIndex = index;
+    updatePreview(index);
 
     if (index < 0) return;
     const line = state.lines[index];
@@ -1062,7 +1118,7 @@
        If we're consistently early or late, gently shift syncOffsetMs to correct it.
        Target: mediaMs should be within ±60ms of line.time when line renders.
        Skips the first line (often instrumental intro) and lines that are re-renders. */
-    if (index > 0 && index !== state.currentIndex) {
+    if (index > 0 && index !== prevIndex && !state.offsetWasRestored) {
       const currentMediaMs = getMediaTimeMs();
       const timingError = currentMediaMs - line.time;
       // timingError < 0 means we're showing line before LRC time (too early)
@@ -1162,6 +1218,12 @@
     });
   }
 
+  /* ── Next-line preview: faint upcoming lyric at the bottom of the screen ── */
+  function updatePreview(index) {
+    const next = index >= 0 ? state.lines[index + 1] : state.lines[0];
+    preview.textContent = next ? next.text : '';
+  }
+
   function clearMoment() {
     clearRevealTimers();
     if (!state.currentMoment) return;
@@ -1212,28 +1274,25 @@
   function estimateFontSize(text, kind) {
     const length = String(text || '').length;
     const wc = words(text).length;
+    let size;
 
     if (kind === 'support') {
-      if (length <= 18) return 62;
-      if (length <= 36) return 54;
-      return 46;
+      size = length <= 18 ? 62 : length <= 36 ? 54 : 46;
+    } else if (kind === 'tag') {
+      size = length <= 16 ? 72 : 60;
+    } else if (kind === 'punch') {
+      if (wc <= 2 || length <= 10) size = 166;
+      else if (length <= 22) size = 148;
+      else if (length <= 40) size = 118;
+      else size = 94;
+    } else {
+      if (length <= 12) size = 150;
+      else if (length <= 24) size = 126;
+      else if (length <= 42) size = 100;
+      else size = 82;
     }
 
-    if (kind === 'tag') {
-      return length <= 16 ? 72 : 60;
-    }
-
-    if (kind === 'punch') {
-      if (wc <= 2 || length <= 10) return 166;
-      if (length <= 22) return 148;
-      if (length <= 40) return 118;
-      return 94;
-    }
-
-    if (length <= 12) return 150;
-    if (length <= 24) return 126;
-    if (length <= 42) return 100;
-    return 82;
+    return Math.round(size * state.fontScale);
   }
 
   function fitMoment(moment) {
@@ -1262,14 +1321,23 @@
      KEYBOARD CONTROLS
      ══════════════════════════════════════ */
   function handleKeys(event) {
-    if (!state.active) return;
     const target = event.target;
     const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
-    if (tagName === 'input' || tagName === 'textarea' || target.isContentEditable) return;
+    if (tagName === 'input' || tagName === 'textarea' || (target && target.isContentEditable)) return;
+
+    /* Esc always closes the overlay — even on the error screen (state.active=false) */
+    if (event.key === 'Escape' && root.isConnected && root.classList.contains('lvx-active')) {
+      event.preventDefault();
+      try { chrome.runtime?.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {}); } catch (_) {}
+      teardown();
+      return;
+    }
+
+    if (!state.active) return;
 
     if (event.key === 't' || event.key === 'T') {
       event.preventDefault();
-      cycleTheme();
+      cycleTheme(event.shiftKey ? -1 : 1);
     }
 
     if (event.key === '[' || event.key === ']') {
@@ -1277,18 +1345,60 @@
       nudgeSync(event.key === '[' ? -SYNC_NUDGE_MS : SYNC_NUDGE_MS);
     }
 
-    if (event.key === 'Escape') {
-      try { chrome.runtime?.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {}); } catch (_) {}
-      teardown();
+    if (event.key === '+' || event.key === '=') {
+      event.preventDefault();
+      setFontScale(state.fontScale + 0.1);
     }
+
+    if (event.key === '-' || event.key === '_') {
+      event.preventDefault();
+      setFontScale(state.fontScale - 0.1);
+    }
+
+    if (event.key === 'b' || event.key === 'B') {
+      event.preventDefault();
+      toggleLiteMode();
+    }
+  }
+
+  function setFontScale(scale) {
+    state.fontScale = clamp(Math.round(scale * 10) / 10, 0.6, 1.6);
+    try { chrome.storage.local.set({ lvxFontScale: state.fontScale }); } catch (_) {}
+    setHud(`Text size ${Math.round(state.fontScale * 100)}%  (+ / - to adjust)`);
+    // Re-render the current line at the new size
+    state.currentIndex = -999;
+  }
+
+  function toggleLiteMode() {
+    state.liteMode = !state.liteMode;
+    root.classList.toggle('lvx-lite', state.liteMode);
+    try { chrome.storage.local.set({ lvxLiteMode: state.liteMode }); } catch (_) {}
+    setHud(state.liteMode
+      ? 'See-through mode ON — video visible behind lyrics (B)'
+      : 'See-through mode OFF (B)');
   }
 
   function nudgeSync(deltaMs) {
     state.syncOffsetMs += deltaMs;
     state.baseOffsetMs = state.syncOffsetMs; // anchor to manual nudge
     state.timingErrors = [];                 // clear calibration history
-    setHud(`Sync offset ${formatOffset(state.syncOffsetMs)}  ([ earlier / ] later)`);
+    state.autoCalibrated = true;             // stop auto-calibration fighting the user
+    state.offsetWasRestored = true;
+    setHud(`Sync offset ${formatOffset(state.syncOffsetMs)}  ([ earlier / ] later) · saved for this song`);
     state.currentIndex = -999;
+
+    // Remember this song's offset so it's perfect next time
+    if (state.trackKey) {
+      try {
+        chrome.storage.local.set({ [`lvxOffset:${state.trackKey}`]: state.syncOffsetMs });
+      } catch (_) {}
+    }
+  }
+
+  function trackStorageKey(track) {
+    const t = String(track.title || '').toLowerCase().trim();
+    const a = String(track.artist || '').toLowerCase().trim();
+    return t ? `${a}|${t}` : '';
   }
 
   function pulse() {
@@ -1315,11 +1425,11 @@
     } catch (_) {}
   }
 
-  function cycleTheme() {
+  function cycleTheme(direction = 1) {
     const idx = THEMES.indexOf(state.theme);
-    const next = THEMES[(idx + 1) % THEMES.length];
+    const next = THEMES[(idx + direction + THEMES.length) % THEMES.length];
     applyTheme(next);
-    setHud(`Theme: ${THEME_LABELS[next]}  (T to cycle)`, false, false);
+    setHud(`Theme: ${THEME_LABELS[next]}  (T next · Shift+T back)`, false, false);
   }
 
   /* ══════════════════════════════════════
@@ -1340,12 +1450,14 @@
     state.spotifyAutoCalibSamples = [];
     root.classList.remove('lvx-active');
     stage.textContent = '';
+    preview.textContent = '';
+    progressFill.style.width = '0%';
     root.remove();
   }
 
   function show() {
     if (!root.isConnected) {
-      root.append(stage, hud);
+      root.append(stage, preview, progress, hud);
       document.documentElement.appendChild(root);
     }
   }
