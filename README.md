@@ -1,59 +1,70 @@
-# LyricVibe 🎵 - Chrome Extension
+# LyricVibe 🎵
 
-A sleek, full-screen kinetic typography lyric visualizer that automatically overlays perfectly synced lyrics directly onto your active music tabs.
+I was listening to music one day, reading along to lyrics on my phone, and it just felt... flat. Then I watched a Samay Raina YouTube special that had this really clean animated caption style at the end credits and thought — why don't lyrics ever feel like that? So I built this.
 
-https://github.com/user-attachments/assets/42663764-0fbd-4b10-9bba-2b1bfbadbe85
+LyricVibe is a Chrome extension that overlays perfectly synced, word-by-word animated lyrics directly on your YouTube Music, Spotify, and SoundCloud tabs. No setup. Just play a song and hit `Ctrl+Shift+L`.
 
-Built for modern music listeners who want an immersive, "Spotify Canvas"-style experience right in their browser.
+https://github.com/user-attachments/assets/dbc143e8-2381-4ff2-99a5-8f47dbd6085d
 
-## ✨ Features
+---
 
-- **Zero Configuration:** Just play a song. The extension automatically detects the playing track, fetches the lyrics via LRCLIB, and handles the sync.
-- **Universal Support:** Works seamlessly on **YouTube Music** ( Works Best ), **Spotify Web Player**, and **SoundCloud**.
-- **Smart Audio Sync:** Analyzes word density and genre tempo to automatically adjust the reveal timing so the text feels perfectly locked to the beat.
-- **13 Stunning Themes:** Press `T` to cycle through beautifully crafted visual themes including Aurora, Matrix, Vinyl, Cosmic, Neon, and more.
-- **Dynamic Layouts:** Lyrics automatically arrange into different visual layouts (Drift, Scatter, Cascade) to keep the screen feeling alive.
-- **Word-by-Word Cascade:** Smooth, snappy transitions that reveal words exactly as they are sung.
+## What it does
 
-## 🚀 How to Install
+- Detects whatever song is playing and fetches synced lyrics automatically
+- Animates them word-by-word, locked to the beat
+- Works on **YouTube Music**, **Spotify Web Player**, and **SoundCloud**
+- 13 visual themes — press `T` to switch between them while listening
+- Remembers your sync preference per song so you only have to nudge it once
+- See-through mode (`B`) so the music video stays visible behind the lyrics
+- Adjust text size with `+` / `-`
+- 100% free, no account, no tracking, no backend server
 
-Since this extension is in beta and not yet on the Chrome Web Store, you can install it manually in 30 seconds:
+---
 
-1. Download this repository by clicking the green **Code** button -> **Download ZIP**.
-2. Extract the downloaded ZIP file to a folder on your computer.
-3. Open your browser and go to the extensions page:
-   - Chrome: `chrome://extensions/`
-   - Edge: `edge://extensions/`
-   - Brave: `brave://extensions/`
-4. Turn on **Developer mode** (toggle in the top right corner).
-5. Click the **Load unpacked** button.
-6. Select the `extension` folder from the ZIP you extracted.
-7. Done! Pin the extension, open YouTube Music or Spotify, and click the LyricVibe icon to start.
+## Install (30 seconds)
 
-## ⌨️ Keyboard Shortcuts
+Not on the Chrome Web Store yet — manual install for now:
 
-- `T` — Cycle through 13 visual themes
-- `[` / `]` — Manually nudge sync timing earlier/later if the auto-sync is slightly off
-- `ESC` — Close the visualizer
+1. Download the ZIP from the green **Code** button → **Download ZIP**
+2. Extract it somewhere on your computer
+3. Go to `chrome://extensions/` (or `edge://extensions/` / `brave://extensions/`)
+4. Turn on **Developer mode** (top right toggle)
+5. Click **Load unpacked** → select the `extension` folder
+6. Pin it, open YouTube Music or Spotify, play a song, press `Ctrl+Shift+L`
 
-## 🎨 Themes Showcase
+---
 
-LyricVibe includes 13 unique themes. Here are a few examples:
+## Keyboard shortcuts
 
-### HYPE (Bold & Punchy)
-<img width="1920" height="1080" alt="Screenshot 2026-04-24 000422" src="https://github.com/user-attachments/assets/2420a4b7-c3df-435d-ace1-56909ed4e74c" />
+| Key | What it does |
+|-----|-------------|
+| `Ctrl+Shift+L` | Toggle LyricVibe on/off |
+| `T` / `Shift+T` | Cycle themes forward / backward |
+| `[` / `]` | Nudge sync earlier or later (saved per song) |
+| `+` / `-` | Make text bigger or smaller |
+| `B` | See-through mode |
+| `Esc` | Close it |
 
-### SOFT (Pastel & Smooth)
-<img width="1920" height="1080" alt="Screenshot 2026-04-24 000439" src="https://github.com/user-attachments/assets/e87340ce-db0c-4b91-b6b6-57dad21d9c56" />
+---
 
-### NEON (Bright & Futuristic)
-<img width="1920" height="1080" alt="Screenshot 2026-04-24 000225" src="https://github.com/user-attachments/assets/e367e141-90e4-4987-a4ff-81ea151a5408" />
+## Themes
 
-### ELEGANT (Classic Serif)
-<img width="1920" height="1080" alt="Screenshot 2026-04-24 000313" src="https://github.com/user-attachments/assets/a75ceacc-1262-44a5-9a30-888af227e9c3" />
+13 themes: SAMAY (default), HYPE, SOFT, NEON, CLEAN, RETRO, GLASS, FIRE, ELEGANT, AURORA, MATRIX, VINYL, COSMIC
 
-## 🛠️ Tech Stack
+---
 
-- **Extension:** Vanilla JavaScript, CSS3 — no frameworks, maximum performance.
-- **Architecture:** 100% client-side, no backend required.
-- **Lyrics Provider:** LRCLIB API (called directly from the extension).
+## How it works
+
+Fully client-side — no server, no backend. The extension reads the song title and artist from the page, looks up synced lyrics from [LRCLIB](https://lrclib.net), and renders them directly in the tab. The only thing that ever leaves your browser is the song title and artist name (to fetch lyrics). No audio is recorded, no browsing history is collected.
+
+Permissions used: `activeTab`, `scripting`, `storage` — nothing else.
+
+---
+
+## Works best on
+
+YouTube Music > SoundCloud > Spotify (Spotify doesn't expose a proper audio element so timing is slightly trickier, but it works well)
+
+---
+
+MIT licensed · Lyrics from [LRCLIB](https://lrclib.net)
