@@ -1,6 +1,6 @@
 # LyricVibe 🎵
 
-I was listening to music one day, reading along to lyrics on my phone, and it just felt... flat. Then I watched a Samay Raina YouTube special (Samay bhai love u)that had this really clean animated caption style at the end credits and thought — why don't lyrics ever feel like that? So I built this.
+I was listening to music one day, reading along to lyrics on my phone, and it just felt... flat. Then I watched a Samay Raina YouTube special (Samay bhai love u) that had this really clean animated caption style at the end credits and thought — why don't lyrics ever feel like that? So I built this.
 
 LyricVibe is a Chrome extension that overlays perfectly synced, word-by-word animated lyrics directly on your YouTube Music, Spotify, and SoundCloud tabs. No setup. Just play a song and hit `Ctrl+Shift+L`.
 
