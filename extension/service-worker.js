@@ -71,8 +71,13 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   // Re-detect lyrics WITHOUT tearing down the overlay — just swap to the new track.
   if (message.type === 'LV_TRACK_CHANGED' && sender.tab && sender.tab.id) {
     const session = sessions.get(sender.tab.id);
-    if (session && session.active) {
-      resyncSession(sender.tab, message.prevKey || '');
+    if (session) {
+      session.active = true;
+      // Because content.js now uses a stability timer, we don't need to poll or wait.
+      // The track is guaranteed to be fully loaded and settled in the DOM.
+      injectOverlay(sender.tab.id).then(() => {
+        detectAndSync(sender.tab.id, message.prevKey || '');
+      });
     }
   }
 });
@@ -92,42 +97,19 @@ async function startSession(tab) {
   await detectAndSync(tabId);
 }
 
-/**
- * Resync an existing session when the track changes on non-Spotify platforms.
- * Waits for the DOM to actually reflect the new song before reading it,
- * preventing stale-data replay (the core YT Music bug fix).
- */
-async function resyncSession(tab, prevKey) {
-  const tabId = tab.id;
-  const session = sessions.get(tabId);
-  if (!session || !session.active) return;
-  if (session.resyncing) return;        // already handling a change
-  session.resyncing = true;
-  try {
-    await injectOverlay(tabId);
-
-    // CRITICAL: wait until page DOM reports a track DIFFERENT from prevKey.
-    // Poll quickly (100ms intervals) up to 12 times (~1.2s max).
-    if (prevKey) {
-      for (let i = 0; i < 12; i++) {
-        const h = await getPageHints(tabId);
-        if (h && h.trackKey && h.trackKey !== prevKey) break;
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    }
-
-    await detectAndSync(tabId);
-  } finally {
-    const s = sessions.get(tabId);
-    if (s) s.resyncing = false;
-  }
+function getHintsTrackKey(h) {
+  const track = (h.track || h.pageTitle || '').trim();
+  const artist = (h.artist || '').trim();
+  return track ? `${track}|||${artist}` : '';
 }
 
 /**
- * Shared detection pipeline used by both startSession and resyncSession.
+ * Shared detection pipeline used by both startSession and track changes.
  * Handles cache check, metadata detection, platform-specific retries.
+ * @param {string} [prevKey] - If provided (from track change), used to validate
+ *   that the current track is actually different before serving cached results.
  */
-async function detectAndSync(tabId) {
+async function detectAndSync(tabId, prevKey) {
   sendToTab(tabId, { type: 'LV_STATUS', text: 'Detecting song...' });
 
   const hints = await getPageHints(tabId);
@@ -135,14 +117,20 @@ async function detectAndSync(tabId) {
   const isYouTubeMusic = (hints.host || '').includes('music.youtube.com');
 
   // STEP 0: Cache hit — instant, no network needed
+  // But ONLY if we've confirmed the track actually changed (prevKey validation).
+  // Without this check, a stale DOM read would serve the previous song's cached lyrics.
   if (hints.track) {
-    const cached = await getCachedLyrics(hints.track, hints.artist);
-    if (cached) {
-      if (cached.track && hints.currentTime != null) {
-        cached.track.playOffsetMs = Math.round((hints.currentTime || 0) * 1000);
+    const currentKey = getHintsTrackKey(hints);
+    const cacheStale = prevKey && currentKey === prevKey;
+    if (!cacheStale) {
+      const cached = await getCachedLyrics(hints.track, hints.artist);
+      if (cached) {
+        if (cached.track && hints.currentTime != null) {
+          cached.track.playOffsetMs = Math.round((hints.currentTime || 0) * 1000);
+        }
+        await handleRecognitionResult(tabId, cached);
+        return;
       }
-      await handleRecognitionResult(tabId, cached);
-      return;
     }
   }
 
@@ -153,28 +141,60 @@ async function detectAndSync(tabId) {
     return;
   }
 
-  // YouTube Music: if first attempt failed, one quick retry then give up
-  // YTM always has metadata — failure means the song genuinely has no lyrics
+  // YouTube Music: if first attempt failed, retry with fresh hints.
+  // YTM DOM may still be settling — give it two more chances.
   if (isYouTubeMusic) {
-    await new Promise((r) => setTimeout(r, 300));
-    const retryHints = await getPageHints(tabId);
-    if (retryHints.track) {
-      const retryResult = await recognize({ mode: 'metadata', hints: retryHints });
-      if (retryResult && retryResult.ok && hasUsableLyrics(retryResult)) {
-        await handleRecognitionResult(tabId, retryResult);
-        return;
+    const ytmRetryDelays = [200, 500];
+    for (const delay of ytmRetryDelays) {
+      await new Promise((r) => setTimeout(r, delay));
+      const retryHints = await getPageHints(tabId);
+      if (prevKey && getHintsTrackKey(retryHints) === prevKey) continue;
+      if (retryHints.track) {
+        const retryResult = await recognize({ mode: 'metadata', hints: retryHints });
+        if (retryResult && retryResult.ok && hasUsableLyrics(retryResult)) {
+          await handleRecognitionResult(tabId, retryResult);
+          return;
+        }
+      }
+    }
+    const finalHints = await getPageHints(tabId);
+    sendToTab(tabId, {
+      type: 'LV_ERROR',
+      text: `No lyrics found for "${finalHints.track || hints.track || 'this song'}". It may not be in the lyrics database yet.`
+    });
+    return;
+  }
+
+  // SoundCloud: page title always has track info, retry quickly
+  const isSoundCloud = (hints.host || '').includes('soundcloud.com');
+  if (isSoundCloud) {
+    const scRetryDelays = [200, 500];
+    let scTrack = hints.track || '';
+    for (const delay of scRetryDelays) {
+      await new Promise((r) => setTimeout(r, delay));
+      const retryHints = await getPageHints(tabId);
+      scTrack = retryHints.track || retryHints.pageTitle || scTrack;
+      if (scTrack) {
+        sendToTab(tabId, { type: 'LV_STATUS', text: `Searching lyrics for: ${scTrack}` });
+        const retryResult = await recognize({ mode: 'metadata', hints: retryHints });
+        if (retryResult && retryResult.ok && hasUsableLyrics(retryResult)) {
+          await handleRecognitionResult(tabId, retryResult);
+          return;
+        }
       }
     }
     sendToTab(tabId, {
       type: 'LV_ERROR',
-      text: `No lyrics found for "${hints.track || 'this song'}". It may not be in the lyrics database yet.`
+      text: scTrack
+        ? `No lyrics found for "${scTrack}". It may not be in the lyrics database yet.`
+        : 'Could not detect a song. Make sure a track is playing on SoundCloud.'
     });
     return;
   }
 
   // STEP 2: Spotify — SPA needs DOM to settle; retry with tighter delays
   if (isSpotify) {
-    const retryDelays = [150, 400, 900, 1800];  // was [200,500,1000,2000,3500] — saves ~3.5s
+    const retryDelays = [100, 300, 700, 1500];
     let lastDetectedTrack = hints.track || '';
     for (let attempt = 0; attempt < retryDelays.length; attempt++) {
       await new Promise((r) => setTimeout(r, retryDelays[attempt]));
@@ -458,26 +478,34 @@ async function getLrclibByMetadata(track) {
     const DUR = track.durationMs > 0 ? String(Math.round(track.durationMs / 1000)) : null;
     const firstArtist = (track.artist || '').split(/[,&]|\bfeat\.?\b|\bft\.?\b/i)[0].trim();
     const UA = { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' };
-    const lrcGet = (qs) => fetch(`${LRCLIB_BASE}/get?${qs}`, { headers: UA });
+    const lrcGet = (qs) => {
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 6000);
+      return fetch(`${LRCLIB_BASE}/get?${qs}`, { headers: UA, signal: c.signal }).finally(() => clearTimeout(t));
+    };
 
     // Build primary query (with album + duration if available)
     const p1 = new URLSearchParams({ track_name: track.title, artist_name: track.artist });
     if (track.album) p1.set('album_name', track.album);
     if (DUR) p1.set('duration', DUR);
 
-    // Build secondary query (no album, no duration) — run in PARALLEL with primary
+    // Build secondary query (no album, no duration)
     const p2 = new URLSearchParams({ track_name: track.title, artist_name: track.artist });
 
-    // Fire both at once — whichever returns a valid result wins
-    const [r1, r2] = await Promise.all([lrcGet(p1.toString()), lrcGet(p2.toString())]);
+    // Fire both in parallel — use allSettled so a failure in one doesn't block the other
+    const [r1, r2] = await Promise.allSettled([lrcGet(p1.toString()), lrcGet(p2.toString())]);
 
-    if (r1.ok) { const d = await r1.json(); if (d && d.id) return d; }
-    if (r2.ok) { const d = await r2.json(); if (d && d.id) return d; }
+    // Prefer primary (with album/duration) over secondary
+    if (r1.status === 'fulfilled' && r1.value.ok) { const d = await r1.value.json(); if (d && d.id) return d; }
+    if (r2.status === 'fulfilled' && r2.value.ok) { const d = await r2.value.json(); if (d && d.id) return d; }
 
     // Fallback: first artist only (handles "Artist1, Artist2 feat. X" style)
     if (firstArtist && firstArtist !== track.artist) {
       const p4 = new URLSearchParams({ track_name: track.title, artist_name: firstArtist });
-      const r4 = await fetch(`${LRCLIB_BASE}/get?${p4.toString()}`, { headers: UA });
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 6000);
+      const r4 = await fetch(`${LRCLIB_BASE}/get?${p4.toString()}`, { headers: UA, signal: c.signal });
+      clearTimeout(t);
       if (r4.ok) {
         const d4 = await r4.json();
         if (d4 && d4.id) return d4;
@@ -559,9 +587,13 @@ async function searchLrclib(query) {
   if (!query) return [];
   try {
     const url = `${LRCLIB_BASE}/search?q=${encodeURIComponent(query)}`;
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 6000);
     const response = await fetch(url, {
-      headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' }
+      headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' },
+      signal: c.signal
     });
+    clearTimeout(t);
     if (!response.ok) return [];
     const json = await response.json();
     return Array.isArray(json) ? json : [];
@@ -573,9 +605,13 @@ async function searchLrclib(query) {
 async function hydrateLrclibResult(result) {
   if ((result.syncedLyrics || result.plainLyrics) || !result.id) return result;
   try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 6000);
     const response = await fetch(`${LRCLIB_BASE}/get/${result.id}`, {
-      headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' }
+      headers: { 'User-Agent': 'LyricVibe/1.0 (chrome-extension)' },
+      signal: c.signal
     });
+    clearTimeout(t);
     if (!response.ok) return result;
     return response.json();
   } catch {
@@ -728,7 +764,17 @@ function parsePageTitle(title) {
     };
   }
 
-  for (const sep of [' - ', ' | ', ' by ']) {
+  // SoundCloud format: "Track Name by Artist Name" (after "| SoundCloud" is stripped)
+  const byMatch = cleaned.match(/^(.+?)\s+by\s+(.+)$/i);
+  if (byMatch) {
+    return {
+      title: byMatch[1].trim(),
+      artist: byMatch[2].trim(),
+      query: `${byMatch[2].trim()} ${byMatch[1].trim()}`
+    };
+  }
+
+  for (const sep of [' - ', ' | ']) {
     const parts = cleaned.split(sep).map((p) => p.trim()).filter(Boolean);
     if (parts.length >= 2) {
       return { artist: parts[0], title: parts[1], query: `${parts[0]} ${parts[1]}` };
@@ -745,7 +791,9 @@ function cleanPageTitle(title) {
     .replace(/\s*\|\s*Spotify\s*$/i, '')
     .replace(/\s*·\s*Spotify\s*$/i, '')
     .replace(/\s*-\s*Spotify\s*$/i, '')
-    .replace(/\s*\|\s*SoundCloud\s*$/i, '')
+    .replace(/\s*[|\u00b7-]\s*SoundCloud\s*$/i, '')
+    .replace(/^Stream\s+/i, '')
+    .replace(/\s*\|\s*Listen\s.*$/i, '')
     .replace(/\[[^\]]*(official|lyrics?|visualizer|audio|video|mv)[^\]]*\]/gi, '')
     .replace(/\([^)]*(official|lyrics?|visualizer|audio|video|mv)[^)]*\)/gi, '')
     .replace(/\s+/g, ' ')

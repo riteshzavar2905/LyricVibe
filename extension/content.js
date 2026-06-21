@@ -116,7 +116,13 @@
   syncLater.title = 'Lyrics later (])';
   syncLater.addEventListener('click', () => nudgeSync(SYNC_NUDGE_MS));
 
-  hud.append(hudLabel, hudText, syncEarlier, syncLater, themeButton, stopButton);
+  const helpButton = document.createElement('button');
+  helpButton.className = 'lvx-help-btn';
+  helpButton.textContent = '?';
+  helpButton.title = 'Keyboard shortcuts (? or H)';
+  helpButton.addEventListener('click', () => toggleShortcutsPanel());
+
+  hud.append(hudLabel, hudText, syncEarlier, syncLater, themeButton, helpButton, stopButton);
 
   /* Next-line preview (bottom center) */
   const preview = document.createElement('div');
@@ -129,7 +135,46 @@
   progressFill.className = 'lvx-progress-fill';
   progress.appendChild(progressFill);
 
-  root.append(stage, preview, progress, hud);
+  /* Keyboard shortcuts help panel */
+  let shortcutsAutoHideTimer = 0;
+  const shortcutsPanel = document.createElement('div');
+  shortcutsPanel.className = 'lvx-shortcuts-panel';
+  shortcutsPanel.innerHTML = [
+    '<div class="lvx-shortcuts-header">',
+    '  <span class="lvx-shortcuts-title">KEYBOARD SHORTCUTS</span>',
+    '  <button class="lvx-shortcuts-close">✕</button>',
+    '</div>',
+    '<div class="lvx-shortcuts-grid">',
+    '  <div class="lvx-shortcut-row">',
+    '    <span class="lvx-key-badge">T</span><span class="lvx-shortcut-sep">/</span><span class="lvx-key-badge">Shift+T</span>',
+    '    <span class="lvx-shortcut-desc">Cycle themes forward / backward</span>',
+    '  </div>',
+    '  <div class="lvx-shortcut-row">',
+    '    <span class="lvx-key-badge">[</span><span class="lvx-shortcut-sep">/</span><span class="lvx-key-badge">]</span>',
+    '    <span class="lvx-shortcut-desc">Nudge sync earlier / later</span>',
+    '  </div>',
+    '  <div class="lvx-shortcut-row">',
+    '    <span class="lvx-key-badge">+</span><span class="lvx-shortcut-sep">/</span><span class="lvx-key-badge">−</span>',
+    '    <span class="lvx-shortcut-desc">Increase / decrease text size</span>',
+    '  </div>',
+    '  <div class="lvx-shortcut-row">',
+    '    <span class="lvx-key-badge">B</span>',
+    '    <span class="lvx-shortcut-desc">Toggle see-through mode</span>',
+    '  </div>',
+    '  <div class="lvx-shortcut-row">',
+    '    <span class="lvx-key-badge">Esc</span>',
+    '    <span class="lvx-shortcut-desc">Close the visualizer</span>',
+    '  </div>',
+    '  <div class="lvx-shortcut-row">',
+    '    <span class="lvx-key-badge">?</span><span class="lvx-shortcut-sep">/</span><span class="lvx-key-badge">H</span>',
+    '    <span class="lvx-shortcut-desc">Show / hide this panel</span>',
+    '  </div>',
+    '</div>',
+    '<div class="lvx-shortcuts-footer">Sync offsets are remembered per song</div>',
+  ].join('\n');
+  shortcutsPanel.querySelector('.lvx-shortcuts-close').addEventListener('click', () => toggleShortcutsPanel(false));
+
+  root.append(stage, preview, progress, hud, shortcutsPanel);
   document.documentElement.appendChild(root);
 
   window.__lyricVibeOverlay = {
@@ -176,6 +221,11 @@
     }
 
     if (message.type === 'LV_STATUS') {
+      cancelLoop();
+      clearRevealTimers();
+      stage.textContent = '';
+      preview.textContent = '';
+      progressFill.style.width = '0%';
       setHud(message.text || 'Working...');
     }
 
@@ -261,10 +311,78 @@
         hints.duration = spotifyDuration / 1000;
       }
     } else if (host.includes('soundcloud.com')) {
-      hints.track = textFrom('.playbackSoundBadge__titleLink') ||
-        textFrom('.soundTitle__title');
-      hints.artist = textFrom('.playbackSoundBadge__lightLink') ||
-        textFrom('.soundTitle__username');
+      // ═══ SOUNDCLOUD ═══
+      // Key challenge: SoundCloud "artist" = uploader (random username), NOT the real artist.
+      // The real artist is typically embedded in the track title: "Artist - Song Title"
+      // We must parse the title to extract the real artist for accurate lyrics lookup.
+
+      let scRawTitle = '';
+      let scUploader = '';
+
+      // Step 1: Read raw track title and uploader from DOM (multiple selector strategies)
+      scRawTitle = textFrom('.playbackSoundBadge__titleLink') ||
+        textFrom('.playbackSoundBadge__titleLink span') ||
+        textFrom('.soundTitle__title span') || '';
+      scUploader = textFrom('.playbackSoundBadge__lightLink') ||
+        textFrom('.soundTitle__username') || '';
+
+      // Strategy 2: DOM traversal of player bar links
+      if (!scRawTitle) {
+        const scPlayer = document.querySelector('.playControls__soundBadge') ||
+          document.querySelector('.playControls__inner') ||
+          document.querySelector('.playControls');
+        if (scPlayer) {
+          for (const a of scPlayer.querySelectorAll('a[href]')) {
+            const href = a.getAttribute('href') || '';
+            const txt = a.textContent.trim();
+            if (!txt || txt.length < 2) continue;
+            if (!scRawTitle && href.split('/').length >= 3 && !href.includes('/sets/')) {
+              scRawTitle = txt;
+            }
+            if (!scUploader && href.match(/^\/[^/]+\/?$/)) {
+              scUploader = txt;
+            }
+          }
+        }
+      }
+
+      // Strategy 3: Parse document.title (most reliable — always has the track info)
+      // Format: "Stream Track Title by Uploader | Listen..." or "Track Title by Uploader | SoundCloud"
+      if (!scRawTitle && title) {
+        let scTitle = title
+          .replace(/\s*[|·]\s*(?:Listen|SoundCloud).*$/i, '')
+          .replace(/^Stream\s+/i, '')
+          .trim();
+        const byMatch = scTitle.match(/^(.+?)\s+by\s+(.+)$/i);
+        if (byMatch) {
+          scRawTitle = byMatch[1].trim();
+          if (!scUploader) scUploader = byMatch[2].trim();
+        } else if (scTitle) {
+          scRawTitle = scTitle;
+        }
+      }
+
+      // Step 2: Parse the real artist from the track title
+      // SoundCloud track titles commonly use these formats:
+      //   "Artist - Song Title"
+      //   "Artist — Song Title"  (em dash)
+      //   "Artist – Song Title"  (en dash)
+      //   "Artist: Song Title"
+      if (scRawTitle) {
+        const dashMatch = scRawTitle.match(/^(.+?)\s*[-–—]\s+(.+)$/);
+        if (dashMatch && dashMatch[1].length >= 2 && dashMatch[2].length >= 2) {
+          // Title has "Artist - Song" format — extract both
+          hints.artist = dashMatch[1].trim();
+          hints.track = dashMatch[2].trim();
+        } else {
+          // No embedded artist — use the full title as track, uploader as artist fallback
+          hints.track = scRawTitle;
+          hints.artist = scUploader;
+        }
+      }
+
+      // Mark this as SoundCloud so the service worker knows
+      hints.isSoundCloud = true;
     }
 
     // Stable key so the service worker can tell whether the page DOM
@@ -564,10 +682,14 @@
      ══════════════════════════════════════ */
   function setupTrackChangeObserver() {
     let lastTrackKey = '';
-    let debounceTimer = 0;
+    let pendingKey = '';
+    let stabilityTimer = 0;
     let mediaHooked = null;
+    let ytmVideoSrcObserver = null;
+    const isYTMusic = location.hostname.includes('music.youtube.com');
 
-    /* Build a stable key for the currently playing track from page hints. */
+    // Simple track key using only DOM text metadata.
+    // The stability timer below handles slow/partial updates natively!
     const currentTrackKey = () => {
       const h = getPageHints();
       const track = (h.track || h.pageTitle || '').trim();
@@ -575,12 +697,9 @@
       return track ? `${track}|||${artist}` : '';
     };
 
-    const checkTrackChange = () => {
-      // React while playing OR while showing the error screen
-      // (so a previously-unmatched song can recover on the next track).
+    const onPotentialChange = () => {
       const listening = state.active || state.errorShown;
       if (!listening) {
-        // Keep lastTrackKey current so the first real change isn't missed
         const k = currentTrackKey();
         if (k) lastTrackKey = k;
         return;
@@ -590,71 +709,84 @@
       if (!key) return;
 
       if (key !== lastTrackKey) {
-        const prevKey = lastTrackKey;
-        lastTrackKey = key;
-
-        if (state.isSpotify) {
-          // SPOTIFY: use the proven stop → delay → restart flow
-          try {
-            chrome.runtime?.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {});
-            setTimeout(() => {
-              try { chrome.runtime?.sendMessage({ type: 'LV_SPOTIFY_TRACK_CHANGED' }).catch(() => {}); } catch (_) {}
-            }, 500);
-          } catch (_) {}
-        } else {
-          // NON-SPOTIFY: send generic track-changed with prevKey for stale-data prevention
-          try {
-            chrome.runtime?.sendMessage({ type: 'LV_TRACK_CHANGED', prevKey: prevKey || '' }).catch(() => {});
-          } catch (_) {}
+        if (key !== pendingKey) {
+          pendingKey = key;
+          clearTimeout(stabilityTimer);
+          
+          // Wait for DOM to stabilize (prevents partial-update false positives)
+          // Keep these as SHORT as possible — the service worker has its own retries
+          const waitMs = state.isSpotify ? 150 : isYTMusic ? 300 : 100;
+          
+          stabilityTimer = setTimeout(() => {
+            const prevKey = lastTrackKey;
+            lastTrackKey = pendingKey;
+            
+            if (state.isSpotify) {
+              try {
+                chrome.runtime?.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {});
+                setTimeout(() => {
+                  try { chrome.runtime?.sendMessage({ type: 'LV_SPOTIFY_TRACK_CHANGED' }).catch(() => {}); } catch (_) {}
+                }, 100);
+              } catch (_) {}
+            } else {
+              try {
+                cancelLoop();
+                clearRevealTimers();
+                stage.textContent = '';
+                preview.textContent = '';
+                progressFill.style.width = '0%';
+                chrome.runtime?.sendMessage({ type: 'LV_TRACK_CHANGED', prevKey: prevKey || '' }).catch(() => {});
+              } catch (_) {}
+            }
+          }, waitMs);
         }
+      } else {
+        // Reverted to lastTrackKey before stabilizing, or just noise
+        pendingKey = '';
+        clearTimeout(stabilityTimer);
       }
     };
 
-    // Platform-aware debounce: Spotify DOM mutates heavily during transitions,
-    // so use 300ms (proven safe). Other platforms use 120ms for snappier reaction.
-    const debounceMs = state.isSpotify ? 300 : 120;
-    const debouncedCheck = () => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(checkTrackChange, debounceMs);
+    let throttleTimer = 0;
+    const triggerCheck = () => {
+      clearTimeout(throttleTimer);
+      throttleTimer = setTimeout(onPotentialChange, 50);
     };
 
-    /* 1) Watch the DOM — covers SPAs (Spotify, YT Music) that swap the
-          now-playing text without a full navigation. */
-    const observer = new MutationObserver(debouncedCheck);
+    const observer = new MutationObserver(triggerCheck);
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-    /* 2) Watch the <title> — most music sites update it on track change. */
     const titleEl = document.querySelector('title');
     if (titleEl) {
-      new MutationObserver(debouncedCheck).observe(titleEl, { childList: true, characterData: true });
+      new MutationObserver(triggerCheck).observe(titleEl, { childList: true, characterData: true });
     }
 
-    /* 3) Hook the <video>/<audio> element directly. The most reliable signal
-          for a new track on YouTube / YouTube Music / SoundCloud is the
-          media's loadedmetadata / play / durationchange event. */
     const hookMedia = () => {
       const media = getMedia();
       if (!media || media === mediaHooked) return;
       mediaHooked = media;
       ['loadedmetadata', 'durationchange', 'play'].forEach((evt) => {
-        media.addEventListener(evt, debouncedCheck, { passive: true });
+        media.addEventListener(evt, triggerCheck, { passive: true });
       });
+
+      if (isYTMusic && media.tagName === 'VIDEO') {
+        if (ytmVideoSrcObserver) ytmVideoSrcObserver.disconnect();
+        ytmVideoSrcObserver = new MutationObserver(triggerCheck);
+        ytmVideoSrcObserver.observe(media, { attributes: true, attributeFilter: ['src'] });
+      }
     };
     hookMedia();
-    // Re-hook periodically in case the site replaces the media element.
     setInterval(hookMedia, 3000);
 
-    /* 4) Watch the URL — YouTube changes ?v= when you click a new video. */
     let lastUrl = location.href;
     setInterval(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        debouncedCheck();
+        triggerCheck();
       }
-    }, 1000);
+    }, isYTMusic ? 400 : 1000);
 
-    /* 5) Safety-net polling for sites that don't fire any of the above. */
-    setInterval(checkTrackChange, 3000);
+    setInterval(triggerCheck, 3000);
   }
 
   /* ══════════════════════════════════════
@@ -1394,11 +1526,22 @@
     const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
     if (tagName === 'input' || tagName === 'textarea' || (target && target.isContentEditable)) return;
 
-    /* Esc always closes the overlay — even on the error screen (state.active=false) */
+    /* Esc closes shortcuts panel first; if panel is closed, Esc closes the overlay */
     if (event.key === 'Escape' && root.isConnected && root.classList.contains('lvx-active')) {
       event.preventDefault();
+      if (shortcutsPanel.classList.contains('lvx-shortcuts-open')) {
+        toggleShortcutsPanel(false);
+        return;
+      }
       try { chrome.runtime?.sendMessage({ type: 'LV_CONTENT_STOP' }).catch(() => {}); } catch (_) {}
       teardown();
+      return;
+    }
+
+    /* ?/H toggle shortcuts panel — works even on the error screen */
+    if ((event.key === '?' || event.key === 'h' || event.key === 'H') && root.isConnected && root.classList.contains('lvx-active')) {
+      event.preventDefault();
+      toggleShortcutsPanel();
       return;
     }
 
@@ -1445,6 +1588,20 @@
     setHud(state.liteMode
       ? 'See-through mode ON — video visible behind lyrics (B)'
       : 'See-through mode OFF (B)');
+  }
+
+  function toggleShortcutsPanel(forceState) {
+    const isOpen = shortcutsPanel.classList.contains('lvx-shortcuts-open');
+    const shouldOpen = typeof forceState === 'boolean' ? forceState : !isOpen;
+    clearTimeout(shortcutsAutoHideTimer);
+    if (shouldOpen) {
+      shortcutsPanel.classList.add('lvx-shortcuts-open');
+      helpButton.classList.add('lvx-help-active');
+      shortcutsAutoHideTimer = setTimeout(() => toggleShortcutsPanel(false), 8000);
+    } else {
+      shortcutsPanel.classList.remove('lvx-shortcuts-open');
+      helpButton.classList.remove('lvx-help-active');
+    }
   }
 
   function nudgeSync(deltaMs) {
@@ -1522,12 +1679,13 @@
     stage.textContent = '';
     preview.textContent = '';
     progressFill.style.width = '0%';
+    toggleShortcutsPanel(false);
     root.remove();
   }
 
   function show() {
     if (!root.isConnected) {
-      root.append(stage, preview, progress, hud);
+      root.append(stage, preview, progress, hud, shortcutsPanel);
       document.documentElement.appendChild(root);
     }
   }

@@ -374,6 +374,164 @@
   color: #fff;
 }
 
+/* ── Help button (? icon) ── */
+.lvx-help-btn {
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 50%;
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.7);
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 24px;
+  text-align: center;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.lvx-help-btn:hover,
+.lvx-help-btn.lvx-help-active {
+  background: rgba(255,255,255,0.16);
+  color: #fff;
+  border-color: rgba(255,255,255,0.35);
+  box-shadow: 0 0 10px rgba(33,230,193,0.25);
+}
+
+/* ── Keyboard Shortcuts Panel ── */
+.lvx-shortcuts-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.92);
+  width: min(420px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  background: rgba(10, 10, 14, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  backdrop-filter: blur(28px) saturate(1.4);
+  box-shadow:
+    0 24px 80px rgba(0,0,0,0.6),
+    0 0 0 1px rgba(255,255,255,0.06) inset,
+    0 1px 0 rgba(255,255,255,0.08) inset;
+  padding: 0;
+  pointer-events: auto;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 250ms ease, transform 250ms ease, visibility 0s 250ms;
+  z-index: 2147483647;
+  font-family: "DM Sans", "Inter", "Space Grotesk", Arial, sans-serif;
+  text-transform: none;
+}
+
+.lvx-shortcuts-panel.lvx-shortcuts-open {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, -50%) scale(1);
+  transition: opacity 250ms ease, transform 250ms ease, visibility 0s 0s;
+}
+
+.lvx-shortcuts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.lvx-shortcuts-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: #21e6c1;
+}
+
+.lvx-shortcuts-close {
+  border: none;
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.5);
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 26px;
+  text-align: center;
+  padding: 0;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s, color 0.15s;
+}
+.lvx-shortcuts-close:hover {
+  background: rgba(255,255,255,0.16);
+  color: #fff;
+}
+
+.lvx-shortcuts-grid {
+  padding: 10px 22px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lvx-shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.lvx-shortcut-row:last-child {
+  border-bottom: none;
+}
+
+.lvx-key-badge {
+  display: inline-block;
+  min-width: 28px;
+  padding: 3px 8px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+  text-align: center;
+  line-height: 1.3;
+  white-space: nowrap;
+  box-shadow: 0 2px 0 rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.04) inset;
+}
+
+.lvx-shortcut-sep {
+  color: rgba(255,255,255,0.25);
+  font-size: 11px;
+  font-weight: 400;
+  margin: 0 -2px;
+}
+
+.lvx-shortcut-desc {
+  flex: 1;
+  color: rgba(255,255,255,0.65);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+  margin-left: 4px;
+}
+
+.lvx-shortcuts-footer {
+  padding: 10px 22px 16px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.3);
+  font-size: 11px;
+  font-weight: 400;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
 /* Theme-colored dot for active theme */
 #lvx-root[data-lvx-theme="hype"]    .lvx-theme-btn { color: #fff;     border-color: rgba(255,255,255,0.4); }
 #lvx-root[data-lvx-theme="soft"]    .lvx-theme-btn { color: #FFB4C2;  border-color: rgba(255,180,194,0.5); }
@@ -1487,6 +1645,27 @@
     right: 7vw;
     width: 78vw;
   }
+
+  .lvx-shortcuts-panel {
+    width: calc(100vw - 32px);
+    border-radius: 12px;
+  }
+
+  .lvx-shortcuts-header {
+    padding: 14px 16px 10px;
+  }
+
+  .lvx-shortcuts-grid {
+    padding: 8px 16px 4px;
+  }
+
+  .lvx-shortcut-desc {
+    font-size: 12px;
+  }
+
+  .lvx-shortcuts-footer {
+    padding: 8px 16px 14px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1497,7 +1676,8 @@
   .lvx-hud,
   .lvx-preview,
   .lvx-progress,
-  .lvx-progress-fill {
+  .lvx-progress-fill,
+  .lvx-shortcuts-panel {
     transition-duration: 1ms !important;
     animation-duration: 1ms !important;
   }
