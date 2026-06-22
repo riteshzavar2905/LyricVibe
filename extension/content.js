@@ -901,13 +901,15 @@
     if (state.isSpotify) {
       setTimeout(() => {
         if (state.active && state.currentIndex < 0) {
-          // No line rendered yet — time source is probably broken
-          stage.innerHTML = '';
-          const errorDiv = document.createElement('div');
-          errorDiv.className = 'lvx-not-available';
-          errorDiv.textContent = 'Lyrics found but sync failed. Try skipping forward/back.';
-          stage.appendChild(errorDiv);
-          setHud('Sync failed — try restarting the song', true, true);
+          // Only show error if the first lyric should have played by now
+          if (state.lines.length && state.lines[0].time < 11000) {
+            stage.innerHTML = '';
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'lvx-not-available';
+            errorDiv.textContent = 'Lyrics found but sync failed. Try skipping forward/back.';
+            stage.appendChild(errorDiv);
+            setHud('Sync failed — try restarting the song', true, true);
+          }
         }
       }, 12000);
     }
@@ -1307,6 +1309,14 @@
   function renderIndex(index, clockMs) {
     const prevIndex = state.currentIndex; // capture BEFORE overwriting (calibration needs it)
     clearMoment();
+    
+    // Clear any previous error messages when we start successfully rendering
+    const errorMsg = stage.querySelector('.lvx-not-available');
+    if (errorMsg) {
+      errorMsg.remove();
+      setHud('Resynced', false, false);
+    }
+
     state.currentIndex = index;
     updatePreview(index);
 
